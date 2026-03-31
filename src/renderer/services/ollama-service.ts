@@ -10,6 +10,7 @@ import type {
   ClusterContext,
   OllamaChatRequest,
   OllamaModelInfo,
+  OllamaModelParams,
   OllamaStreamChunk,
 } from "../../common/types";
 
@@ -227,6 +228,7 @@ SAFETY RULES:
   async *streamChat(
     messages: ChatMessage[],
     clusterContext?: ClusterContext,
+    modelParams?: OllamaModelParams,
   ): AsyncGenerator<string, void, unknown> {
     this.abortController = new AbortController();
 
@@ -240,11 +242,20 @@ SAFETY RULES:
       })),
     ];
 
+    const plainOptions = modelParams ? { ...modelParams } : undefined;
+
     const request: OllamaChatRequest = {
       model: this.model,
       messages: apiMessages,
       stream: true,
+      ...(plainOptions ? { options: plainOptions } : {}),
     };
+
+    console.log("[K8s SRE] streamChat request →", JSON.stringify({
+      model: request.model,
+      options: request.options,
+      messagesCount: request.messages.length,
+    }));
 
     try {
       const response = await fetch(`${this.endpoint}/api/chat`, {
@@ -303,6 +314,7 @@ SAFETY RULES:
   async chat(
     messages: ChatMessage[],
     clusterContext?: ClusterContext,
+    modelParams?: OllamaModelParams,
   ): Promise<string> {
     const systemPrompt = this.buildSystemPrompt(clusterContext);
 
@@ -318,6 +330,7 @@ SAFETY RULES:
       model: this.model,
       messages: apiMessages,
       stream: false,
+      ...(modelParams ? { options: modelParams } : {}),
     };
 
     const response = await fetch(`${this.endpoint}/api/chat`, {

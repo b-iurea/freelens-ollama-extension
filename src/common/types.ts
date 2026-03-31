@@ -44,6 +44,22 @@ export interface K8sEventSummary {
   age?: string;
 }
 
+export interface OllamaModelParams {
+  temperature: number;
+  top_p: number;
+  top_k: number;
+  num_predict: number;
+  repeat_penalty: number;
+}
+
+export const DEFAULT_MODEL_PARAMS: OllamaModelParams = {
+  temperature: 0.7,
+  top_p: 0.9,
+  top_k: 40,
+  num_predict: -1,
+  repeat_penalty: 1.1,
+};
+
 export interface OllamaChatRequest {
   model: string;
   messages: Array<{
@@ -51,6 +67,7 @@ export interface OllamaChatRequest {
     content: string;
   }>;
   stream: boolean;
+  options?: Partial<OllamaModelParams>;
 }
 
 export interface OllamaChatResponse {

@@ -12,7 +12,8 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { ChatStore } from "../stores/chat-store";
-import type { OllamaModelInfo } from "../../common/types";
+import type { OllamaModelInfo, OllamaModelParams } from "../../common/types";
+import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 
 const chatStore = ChatStore.getInstance();
 
@@ -107,12 +108,45 @@ const prefStyles = {
     color: "var(--textColorPrimary)",
     cursor: "pointer",
   },
+  sliderRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+  },
+  slider: {
+    flex: 1,
+    cursor: "pointer",
+    accentColor: "var(--colorInfo, #89b4fa)",
+  },
+  sliderValue: {
+    minWidth: "48px",
+    textAlign: "right" as const,
+    fontSize: "13px",
+    fontWeight: 600 as const,
+    color: "var(--textColorPrimary)",
+    fontFamily: "monospace",
+  },
+  paramDesc: {
+    fontSize: "11px",
+    color: "var(--textColorSecondary)",
+    margin: "0 0 2px 0",
+  },
+  resetBtn: {
+    padding: "4px 12px",
+    border: "1px solid var(--borderColor)",
+    borderRadius: "4px",
+    background: "transparent",
+    color: "var(--textColorSecondary)",
+    fontSize: "11px",
+    cursor: "pointer",
+  },
 };
 
 export function SrePreferencesInput() {
   const [endpoint, setEndpoint] = useState(chatStore.ollamaEndpoint);
   const [model, setModel] = useState(chatStore.ollamaModel);
   const [autoRefresh, setAutoRefresh] = useState(chatStore.autoRefreshContext);
+  const [modelParams, setModelParams] = useState<OllamaModelParams>({ ...chatStore.modelParams });
   const [connected, setConnected] = useState(false);
   const [models, setModels] = useState<OllamaModelInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -248,6 +282,20 @@ export function SrePreferencesInput() {
     chatStore.setAutoRefreshContext(val);
   }, []);
 
+  const onParamChange = useCallback((key: keyof OllamaModelParams, value: number) => {
+    setModelParams((prev) => {
+      const next = { ...prev, [key]: value };
+      chatStore.setModelParams({ [key]: value });
+      return next;
+    });
+  }, []);
+
+  const resetParams = useCallback(() => {
+    const defaults = { ...DEFAULT_MODEL_PARAMS };
+    setModelParams(defaults);
+    chatStore.setModelParams(defaults);
+  }, []);
+
   return (
     <div style={prefStyles.container}>
       {/* Connection Settings */}
@@ -354,6 +402,120 @@ export function SrePreferencesInput() {
         <div style={prefStyles.sublabel}>
           When enabled, the assistant automatically gathers the current state of pods,
           deployments, services, nodes, and events before responding.
+        </div>
+      </div>
+
+      <hr style={prefStyles.divider} />
+
+      {/* Model Parameters */}
+      <div style={prefStyles.section}>
+        <div style={prefStyles.row}>
+          <label style={prefStyles.label}>Model Parameters</label>
+          <button style={prefStyles.resetBtn} onClick={resetParams}>
+            Reset to Defaults
+          </button>
+        </div>
+
+        {/* Temperature */}
+        <div style={{ marginTop: "8px" }}>
+          <label style={prefStyles.label}>Temperature</label>
+          <p style={prefStyles.paramDesc}>
+            Controls randomness. Lower values make the output more focused and deterministic; higher values make it more creative. (0.0 – 2.0)
+          </p>
+          <div style={prefStyles.sliderRow}>
+            <input
+              style={prefStyles.slider}
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={modelParams.temperature}
+              onChange={(e) => onParamChange("temperature", parseFloat(e.target.value))}
+            />
+            <span style={prefStyles.sliderValue}>{modelParams.temperature.toFixed(2)}</span>
+          </div>
+        </div>
+
+        {/* Top P */}
+        <div style={{ marginTop: "8px" }}>
+          <label style={prefStyles.label}>Top P (Nucleus Sampling)</label>
+          <p style={prefStyles.paramDesc}>
+            Only consider tokens whose cumulative probability is within this threshold. Lower values make output more focused. (0.0 – 1.0)
+          </p>
+          <div style={prefStyles.sliderRow}>
+            <input
+              style={prefStyles.slider}
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={modelParams.top_p}
+              onChange={(e) => onParamChange("top_p", parseFloat(e.target.value))}
+            />
+            <span style={prefStyles.sliderValue}>{modelParams.top_p.toFixed(2)}</span>
+          </div>
+        </div>
+
+        {/* Top K */}
+        <div style={{ marginTop: "8px" }}>
+          <label style={prefStyles.label}>Top K</label>
+          <p style={prefStyles.paramDesc}>
+            Limits the number of tokens considered at each step. Lower values reduce randomness; 0 disables the limit. (0 – 200)
+          </p>
+          <div style={prefStyles.sliderRow}>
+            <input
+              style={prefStyles.slider}
+              type="range"
+              min="0"
+              max="200"
+              step="1"
+              value={modelParams.top_k}
+              onChange={(e) => onParamChange("top_k", parseInt(e.target.value, 10))}
+            />
+            <span style={prefStyles.sliderValue}>{modelParams.top_k}</span>
+          </div>
+        </div>
+
+        {/* Repeat Penalty */}
+        <div style={{ marginTop: "8px" }}>
+          <label style={prefStyles.label}>Repeat Penalty</label>
+          <p style={prefStyles.paramDesc}>
+            Penalizes the model for repeating the same tokens. Higher values reduce repetition. (1.0 – 2.0)
+          </p>
+          <div style={prefStyles.sliderRow}>
+            <input
+              style={prefStyles.slider}
+              type="range"
+              min="1"
+              max="2"
+              step="0.05"
+              value={modelParams.repeat_penalty}
+              onChange={(e) => onParamChange("repeat_penalty", parseFloat(e.target.value))}
+            />
+            <span style={prefStyles.sliderValue}>{modelParams.repeat_penalty.toFixed(2)}</span>
+          </div>
+        </div>
+
+        {/* Num Predict (Max Tokens) */}
+        <div style={{ marginTop: "8px" }}>
+          <label style={prefStyles.label}>Max Tokens (num_predict)</label>
+          <p style={prefStyles.paramDesc}>
+            Maximum number of tokens to generate in the response. Use -1 for unlimited. (-1 – 8192)
+          </p>
+          <div style={prefStyles.sliderRow}>
+            <input
+              style={prefStyles.slider}
+              type="range"
+              min="-1"
+              max="8192"
+              step="1"
+              value={modelParams.num_predict}
+              onChange={(e) => onParamChange("num_predict", parseInt(e.target.value, 10))}
+            />
+            <span style={prefStyles.sliderValue}>
+              {modelParams.num_predict === -1 ? "∞" : modelParams.num_predict}
+            </span>
+          </div>
         </div>
       </div>
     </div>

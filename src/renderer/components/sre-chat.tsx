@@ -7,7 +7,8 @@
 
 import { observer } from "mobx-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatMessage } from "../../common/types";
+import type { ChatMessage, OllamaModelParams } from "../../common/types";
+import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { ChatStore } from "../stores/chat-store";
 import { MarkdownRenderer } from "./markdown-renderer";
 
@@ -29,6 +30,7 @@ const S = {
     display: "flex",
     flexDirection: "column" as const,
     height: "100%",
+    position: "relative" as const,
     background: "var(--mainBackground, #1e1e2e)",
     color: "var(--textColorPrimary, #cdd6f4)",
     fontFamily: "var(--font-main, Roboto, sans-serif)",
@@ -382,6 +384,7 @@ export const SreChat = observer(() => {
     el.style.height = Math.min(el.scrollHeight, 120) + "px";
   }, []);
 
+  const [showParams, setShowParams] = useState(false);
   const connected = chatStore.isOllamaConnected;
   const ctx = chatStore.clusterContext;
   const warnCount = ctx ? ctx.events.filter((ev) => ev.type === "Warning").length : 0;
@@ -427,6 +430,15 @@ export const SreChat = observer(() => {
               🧠 {chatStore.ollamaModel}
             </span>
           ) : null}
+          {connected && (
+            <button
+              style={{ ...S.btn, fontSize: "13px", padding: "3px 8px" }}
+              onClick={() => setShowParams((p) => !p)}
+              title="Model parameters"
+            >
+              ⚙️
+            </button>
+          )}
           <button style={S.btn} onClick={() => chatStore.refreshClusterContext()} disabled={chatStore.isGatheringContext}>
             🔄 {chatStore.isGatheringContext ? "Scanning…" : "Refresh"}
           </button>
@@ -435,6 +447,9 @@ export const SreChat = observer(() => {
           )}
         </div>
       </div>
+
+      {/* ── Params panel (same context) ── */}
+      {showParams && <ModelParamsPanel onClose={() => setShowParams(false)} />}
 
       {/* ── Context bar ── */}
       {ctx && (
@@ -569,5 +584,156 @@ function LoadingDots() {
     </div>
   );
 }
+
+/* ── Model parameters panel (inline, same context) ── */
+const pS = {
+  overlay: {
+    position: "absolute" as const,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 90,
+  },
+  panel: {
+    position: "absolute" as const,
+    top: "48px",
+    right: "12px",
+    zIndex: 100,
+    width: "320px",
+    maxHeight: "70vh",
+    overflowY: "auto" as const,
+    background: "var(--layoutTabsBackground, #181825)",
+    border: "1px solid var(--borderColor, #313244)",
+    borderRadius: "10px",
+    boxShadow: "0 8px 32px rgba(0,0,0,.45)",
+    padding: "14px 16px",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "10px",
+  },
+  head: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  title: {
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "var(--textColorPrimary, #cdd6f4)",
+    margin: 0,
+  },
+  close: {
+    background: "none",
+    border: "none",
+    color: "var(--textColorSecondary, #a6adc8)",
+    fontSize: "14px",
+    cursor: "pointer",
+    padding: "2px 6px",
+  },
+  reset: {
+    padding: "3px 10px",
+    border: "1px solid var(--borderColor, #313244)",
+    borderRadius: "4px",
+    background: "transparent",
+    color: "var(--textColorSecondary, #a6adc8)",
+    fontSize: "10px",
+    cursor: "pointer",
+  },
+  paramLabel: {
+    fontSize: "11px",
+    fontWeight: 600,
+    color: "var(--textColorPrimary, #cdd6f4)",
+    margin: 0,
+  },
+  paramDesc: {
+    fontSize: "10px",
+    color: "var(--textColorSecondary, #a6adc8)",
+    margin: 0,
+    lineHeight: 1.3,
+  },
+  sliderRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  slider: {
+    flex: 1,
+    cursor: "pointer",
+    accentColor: "#89b4fa",
+    height: "4px",
+  },
+  val: {
+    minWidth: "36px",
+    textAlign: "right" as const,
+    fontSize: "12px",
+    fontWeight: 600,
+    fontFamily: "monospace",
+    color: "#89b4fa",
+  },
+};
+
+const MODEL_PARAMS_CONFIG: Array<{
+  key: keyof OllamaModelParams;
+  label: string;
+  desc: string;
+  min: number;
+  max: number;
+  step: number;
+  format: (v: number) => string;
+}> = [
+  { key: "temperature", label: "Temperature", desc: "Creativity vs determinism (0 = focused, 2 = creative)", min: 0, max: 2, step: 0.05, format: (v) => v.toFixed(2) },
+  { key: "top_p", label: "Top P", desc: "Nucleus sampling threshold (lower = more focused)", min: 0, max: 1, step: 0.05, format: (v) => v.toFixed(2) },
+  { key: "top_k", label: "Top K", desc: "Token vocabulary limit (0 = disabled)", min: 0, max: 200, step: 1, format: (v) => String(v) },
+  { key: "repeat_penalty", label: "Repeat Penalty", desc: "Penalize repeated tokens", min: 1, max: 2, step: 0.05, format: (v) => v.toFixed(2) },
+  { key: "num_predict", label: "Max Tokens", desc: "Max response length (-1 = unlimited)", min: -1, max: 8192, step: 1, format: (v) => v === -1 ? "∞" : String(v) },
+];
+
+const ModelParamsPanel = observer(({ onClose }: { onClose: () => void }) => {
+  const params = chatStore.modelParams;
+
+  const onChange = useCallback((key: keyof OllamaModelParams, raw: string) => {
+    const v = key === "top_k" || key === "num_predict" ? parseInt(raw, 10) : parseFloat(raw);
+    chatStore.setModelParams({ [key]: v });
+  }, []);
+
+  const reset = useCallback(() => {
+    chatStore.setModelParams({ ...DEFAULT_MODEL_PARAMS });
+  }, []);
+
+  return (
+    <>
+      {/* click-away overlay */}
+      <div style={pS.overlay} onClick={onClose} />
+      <div style={pS.panel}>
+        <div style={pS.head}>
+          <h4 style={pS.title}>⚙️ Model Parameters</h4>
+          <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+            <button style={pS.reset} onClick={reset}>Reset</button>
+            <button style={pS.close} onClick={onClose}>✕</button>
+          </div>
+        </div>
+        {MODEL_PARAMS_CONFIG.map((p) => (
+          <div key={p.key} style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+            <span style={pS.paramLabel}>{p.label}</span>
+            <span style={pS.paramDesc}>{p.desc}</span>
+            <div style={pS.sliderRow}>
+              <input
+                style={pS.slider}
+                type="range"
+                min={p.min}
+                max={p.max}
+                step={p.step}
+                value={params[p.key]}
+                onChange={(e) => onChange(p.key, e.target.value)}
+              />
+              <span style={pS.val}>{p.format(params[p.key])}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+});
 
 

@@ -6,7 +6,8 @@
  */
 
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
-import type { ChatMessage, ClusterContext, OllamaModelInfo } from "../../common/types";
+import type { ChatMessage, ClusterContext, OllamaModelInfo, OllamaModelParams } from "../../common/types";
+import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { K8sContextService } from "../services/k8s-context-service";
 import { OllamaService } from "../services/ollama-service";
 
@@ -16,6 +17,7 @@ interface PersistedSettings {
   ollamaEndpoint: string;
   ollamaModel: string;
   autoRefreshContext: boolean;
+  modelParams?: OllamaModelParams;
 }
 
 export class ChatStore {
@@ -29,6 +31,7 @@ export class ChatStore {
   clusterContext: ClusterContext | null = null;
   isGatheringContext = false;
   autoRefreshContext = true;
+  modelParams: OllamaModelParams = { ...DEFAULT_MODEL_PARAMS };
 
   private ollamaService: OllamaService;
   private static instance: ChatStore | null = null;
@@ -52,11 +55,13 @@ export class ChatStore {
       clusterContext: observable,
       isGatheringContext: observable,
       autoRefreshContext: observable,
+      modelParams: observable,
       hasMessages: computed,
       lastMessage: computed,
       setEndpoint: action,
       setModel: action,
       setAutoRefreshContext: action,
+      setModelParams: action,
       syncSettings: action,
       clearMessages: action,
       setError: action,
@@ -84,6 +89,7 @@ export class ChatStore {
         if (s.ollamaEndpoint) this.ollamaEndpoint = s.ollamaEndpoint;
         if (s.ollamaModel) this.ollamaModel = s.ollamaModel;
         if (typeof s.autoRefreshContext === "boolean") this.autoRefreshContext = s.autoRefreshContext;
+        if (s.modelParams) this.modelParams = { ...DEFAULT_MODEL_PARAMS, ...s.modelParams };
       }
     } catch {
       // first run or corrupt data — use defaults
@@ -96,6 +102,7 @@ export class ChatStore {
         ollamaEndpoint: this.ollamaEndpoint,
         ollamaModel: this.ollamaModel,
         autoRefreshContext: this.autoRefreshContext,
+        modelParams: this.modelParams,
       };
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
     } catch {
@@ -122,6 +129,9 @@ export class ChatStore {
       }
       if (typeof s.autoRefreshContext === "boolean") {
         this.autoRefreshContext = s.autoRefreshContext;
+      }
+      if (s.modelParams) {
+        this.modelParams = { ...DEFAULT_MODEL_PARAMS, ...s.modelParams };
       }
     } catch {
       // ignore parse errors
@@ -157,6 +167,11 @@ export class ChatStore {
 
   setAutoRefreshContext(value: boolean) {
     this.autoRefreshContext = value;
+    this.saveSettings();
+  }
+
+  setModelParams(params: Partial<OllamaModelParams>) {
+    this.modelParams = { ...this.modelParams, ...params };
     this.saveSettings();
   }
 
@@ -247,6 +262,7 @@ export class ChatStore {
       const stream = this.ollamaService.streamChat(
         conversationMessages,
         this.clusterContext || undefined,
+        { ...this.modelParams },
       );
 
       for await (const chunk of stream) {
