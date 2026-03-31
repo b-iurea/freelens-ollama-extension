@@ -385,6 +385,7 @@ export const SreChat = observer(() => {
   }, []);
 
   const [showParams, setShowParams] = useState(false);
+  const [showConnection, setShowConnection] = useState(false);
   const connected = chatStore.isOllamaConnected;
   const ctx = chatStore.clusterContext;
   const warnCount = ctx ? ctx.events.filter((ev) => ev.type === "Warning").length : 0;
@@ -408,10 +409,14 @@ export const SreChat = observer(() => {
           <h2 style={S.headerTitle}>K8s SRE Assistant</h2>
         </div>
         <div style={S.headerActions}>
-          <span style={S.badge(connected)}>
+          <button
+            style={{ ...S.badge(connected), border: "none", cursor: "pointer" }}
+            onClick={() => setShowConnection((p) => !p)}
+            title="Ollama connection settings"
+          >
             <span style={S.dot(connected)} />
             {connected ? "Ollama" : "Disconnected"}
-          </span>
+          </button>
           {connected && chatStore.availableModels.length > 0 ? (
             <select
               style={S.modelSelect}
@@ -451,6 +456,9 @@ export const SreChat = observer(() => {
       {/* ── Params panel (same context) ── */}
       {showParams && <ModelParamsPanel onClose={() => setShowParams(false)} />}
 
+      {/* ── Connection panel (same context) ── */}
+      {showConnection && <ConnectionPanel onClose={() => setShowConnection(false)} />}
+
       {/* ── Context bar ── */}
       {ctx && (
         <div style={S.ctx}>
@@ -484,7 +492,7 @@ export const SreChat = observer(() => {
             </p>
             {!connected && (
               <p style={{ ...S.welcomeDesc, color: "#f38ba8" }}>
-                ⚠️ Ollama not connected — configure endpoint in <strong>Preferences → K8s SRE Assistant</strong>
+                ⚠️ Ollama not connected — click the <strong>Disconnected</strong> badge above to configure
               </p>
             )}
             <div style={S.suggestions}>
@@ -731,6 +739,170 @@ const ModelParamsPanel = observer(({ onClose }: { onClose: () => void }) => {
             </div>
           </div>
         ))}
+      </div>
+    </>
+  );
+});
+
+/* ── Connection panel (inline, same context) ── */
+const ConnectionPanel = observer(({ onClose }: { onClose: () => void }) => {
+  const [endpoint, setEndpoint] = useState(chatStore.ollamaEndpoint);
+  const [testing, setTesting] = useState(false);
+  const [debugInfo, setDebugInfo] = useState("");
+  const [status, setStatus] = useState<"idle" | "ok" | "error">("idle");
+
+  const testConnection = useCallback(async () => {
+    setTesting(true);
+    setStatus("idle");
+    setDebugInfo("Starting connection test…");
+    const ep = endpoint.replace(/\/+$/, "");
+    chatStore.setEndpoint(ep);
+    setEndpoint(ep);
+
+    const url = `${ep}/api/tags`;
+    const logs: string[] = [`Testing: ${url}`];
+
+    try {
+      let data: any;
+      let method = "fetch";
+
+      try {
+        logs.push("Trying fetch…");
+        setDebugInfo(logs.join("\n"));
+        const resp = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5000) });
+        logs.push(`fetch status: ${resp.status} ok: ${resp.ok}`);
+        setDebugInfo(logs.join("\n"));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const text = await resp.text();
+        logs.push(`Body length: ${text.length}`);
+        setDebugInfo(logs.join("\n"));
+        data = JSON.parse(text);
+      } catch (fetchErr: any) {
+        logs.push(`fetch error: ${fetchErr.message}`);
+        logs.push("Trying XHR fallback…");
+        setDebugInfo(logs.join("\n"));
+        method = "XHR";
+
+        data = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", url, true);
+          xhr.timeout = 5000;
+          xhr.onload = () => {
+            logs.push(`XHR status: ${xhr.status}`);
+            setDebugInfo(logs.join("\n"));
+            try { resolve(JSON.parse(xhr.responseText)); }
+            catch { reject(new Error("JSON parse error")); }
+          };
+          xhr.onerror = () => { logs.push("XHR network error"); setDebugInfo(logs.join("\n")); reject(new Error("XHR network error")); };
+          xhr.ontimeout = () => { logs.push("XHR timeout"); setDebugInfo(logs.join("\n")); reject(new Error("XHR timeout")); };
+          xhr.send();
+        });
+      }
+
+      const modelList = data?.models || [];
+      logs.push(`✓ Connected via ${method}. Models: ${modelList.length}`);
+      if (modelList.length > 0) {
+        logs.push(modelList.map((m: any) => m.name).join(", "));
+      } else {
+        logs.push("⚠ No models. Run: ollama pull llama3.2");
+      }
+      setDebugInfo(logs.join("\n"));
+      setStatus("ok");
+
+      chatStore.isOllamaConnected = true;
+      chatStore.availableModels = modelList;
+      chatStore.error = null;
+
+      if (modelList.length > 0 && !modelList.find((m: any) => m.name === chatStore.ollamaModel)) {
+        chatStore.setModel(modelList[0].name);
+      }
+    } catch (e: any) {
+      logs.push(`✕ FAILED: ${e.message}`);
+      logs.push("Hints:");
+      logs.push("- Is Ollama running? (ollama serve)");
+      logs.push("- Remote: set OLLAMA_ORIGINS=* on Ollama host");
+      logs.push("- Remote: set OLLAMA_HOST=0.0.0.0:11434");
+      setDebugInfo(logs.join("\n"));
+      setStatus("error");
+    } finally {
+      setTesting(false);
+    }
+  }, [endpoint]);
+
+  return (
+    <>
+      <div style={pS.overlay} onClick={onClose} />
+      <div style={{ ...pS.panel, left: "12px", right: "auto" }}>
+        <div style={pS.head}>
+          <h4 style={pS.title}>🔌 Ollama Connection</h4>
+          <button style={pS.close} onClick={onClose}>✕</button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <span style={pS.paramLabel}>Endpoint</span>
+          <input
+            style={{
+              padding: "6px 10px",
+              border: "1px solid var(--borderColor, #313244)",
+              borderRadius: "6px",
+              background: "var(--mainBackground, #1e1e2e)",
+              color: "var(--textColorPrimary, #cdd6f4)",
+              fontSize: "12px",
+              outline: "none",
+              width: "100%",
+              boxSizing: "border-box" as const,
+            }}
+            type="text"
+            value={endpoint}
+            onChange={(e) => { setEndpoint(e.target.value); chatStore.setEndpoint(e.target.value); }}
+            placeholder="http://localhost:11434"
+          />
+        </div>
+
+        <button
+          style={{
+            padding: "6px 14px",
+            border: "1px solid var(--colorInfo, #89b4fa)",
+            borderRadius: "6px",
+            background: "var(--colorInfo, #89b4fa)",
+            color: "#1e1e2e",
+            fontSize: "12px",
+            fontWeight: 600,
+            cursor: testing ? "wait" : "pointer",
+            width: "100%",
+          }}
+          onClick={testConnection}
+          disabled={testing}
+        >
+          {testing ? "Testing…" : "Test Connection"}
+        </button>
+
+        {status === "ok" && (
+          <span style={{ color: "#a6e3a1", fontSize: "11px", fontWeight: 500 }}>
+            ✓ Connected — {chatStore.availableModels.length} model{chatStore.availableModels.length !== 1 ? "s" : ""} found
+          </span>
+        )}
+        {status === "error" && (
+          <span style={{ color: "#f38ba8", fontSize: "11px", fontWeight: 500 }}>
+            ✕ Connection failed
+          </span>
+        )}
+
+        {debugInfo && (
+          <pre style={{
+            fontSize: "10px",
+            fontFamily: "monospace",
+            background: "rgba(0,0,0,.3)",
+            color: "#a6adc8",
+            padding: "8px",
+            borderRadius: "4px",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-all" as const,
+            maxHeight: "180px",
+            overflow: "auto",
+            margin: 0,
+          }}>{debugInfo}</pre>
+        )}
       </div>
     </>
   );
