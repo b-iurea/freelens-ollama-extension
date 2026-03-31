@@ -29,7 +29,6 @@ const S = {
     display: "flex",
     flexDirection: "column" as const,
     height: "100%",
-    width: "100%",
     background: "var(--mainBackground, #1e1e2e)",
     color: "var(--textColorPrimary, #cdd6f4)",
     fontFamily: "var(--font-main, Roboto, sans-serif)",
