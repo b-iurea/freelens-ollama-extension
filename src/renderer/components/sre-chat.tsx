@@ -92,6 +92,17 @@ const S = {
     cursor: "pointer",
     whiteSpace: "nowrap" as const,
   },
+  modelSelect: {
+    padding: "3px 8px",
+    border: "1px solid var(--borderColor, #313244)",
+    borderRadius: "6px",
+    background: "var(--mainBackground, #1e1e2e)",
+    color: "var(--textColorPrimary, #cdd6f4)",
+    fontSize: "11px",
+    outline: "none" as const,
+    cursor: "pointer",
+    maxWidth: "180px",
+  },
   /* context bar */
   ctx: {
     display: "flex",
@@ -362,6 +373,24 @@ export const SreChat = observer(() => {
             <span style={S.dot(connected)} />
             {connected ? "Ollama" : "Disconnected"}
           </span>
+          {connected && chatStore.availableModels.length > 0 ? (
+            <select
+              style={S.modelSelect}
+              value={chatStore.ollamaModel}
+              onChange={(e) => chatStore.setModel(e.target.value)}
+              title="Select AI model"
+            >
+              {chatStore.availableModels.map((m) => (
+                <option key={m.name} value={m.name}>
+                  🧠 {m.name}
+                </option>
+              ))}
+            </select>
+          ) : connected ? (
+            <span style={{ ...S.badge(true), background: "rgba(137,180,250,.12)", color: "#89b4fa" }}>
+              🧠 {chatStore.ollamaModel}
+            </span>
+          ) : null}
           <button style={S.btn} onClick={() => chatStore.refreshClusterContext()} disabled={chatStore.isGatheringContext}>
             🔄 {chatStore.isGatheringContext ? "Scanning…" : "Refresh"}
           </button>
