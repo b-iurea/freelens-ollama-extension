@@ -15,6 +15,10 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 - **🎨 Beautiful UI** — Modern chat interface with Markdown rendering, code blocks, and tables
 - **⚡ Suggested Queries** — Quick-start prompts for common SRE tasks
 - **🛑 Cancelable** — Stop AI generation at any time
+- **⚙️ Preferences Panel** — Dedicated settings page in Freelens preferences to configure endpoint, model, and behavior
+- **🔌 Connection Testing** — One-click test with detailed debug log and automatic `fetch` / `XHR` fallback
+- **📦 Model Browser** — Discover and select from all models available on your Ollama instance (with size info)
+- **💾 Persistent Settings** — Endpoint, model, and options are saved to `localStorage` and synced across Freelens windows
 
 ## 📋 Requirements
 
@@ -86,13 +90,33 @@ Then in Freelens: **Extensions** → **Add Local Extension** → select the `.tg
 
 ## ⚙️ Configuration
 
-Click the **⚙️ Settings** button in the extension header to configure:
+### Preferences Panel
+
+Open **Freelens → Preferences → K8s SRE Assistant** to access the dedicated settings page.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Endpoint | `http://localhost:11434` | Ollama API endpoint |
-| Model | `llama3.2` | AI model to use |
-| Auto-refresh | `true` | Refresh cluster context before each message |
+| Ollama Endpoint | `http://localhost:11434` | URL of your Ollama instance. Supports local and remote setups. |
+| AI Model | `llama3.2` | Select from discovered models or type a name manually. |
+| Auto-refresh context | `true` | Gather cluster state (pods, deployments, services, nodes, events) before each message. |
+
+#### Connection Testing
+
+Click **Test Connection** to verify the Ollama endpoint. The panel shows:
+
+- A **status indicator** (✓ Connected / ✕ Error) with a detailed debug log.
+- Automatic fallback from `fetch` to `XHR` if the first method fails (useful in Electron/restrictive environments).
+- Troubleshooting hints when the connection cannot be established (e.g. `OLLAMA_ORIGINS`, `OLLAMA_HOST`).
+
+#### Model Browser
+
+Once connected, the model dropdown lists every model available on the Ollama instance together with its size. If no connection is available you can still type a model name manually.
+
+> **Tip for remote Ollama:** set `OLLAMA_ORIGINS=*` and `OLLAMA_HOST=0.0.0.0:11434` on the Ollama host to allow connections from Freelens.
+
+### In-Chat Settings
+
+Click the **⚙️ Settings** button in the chat header to toggle inline settings without leaving the conversation.
 
 ## 🏗️ Architecture
 
@@ -101,7 +125,7 @@ src/
 ├── main/
 │   └── index.ts                    # Main process entry (Freelens lifecycle)
 ├── renderer/
-│   ├── index.tsx                   # Renderer entry (registers pages & menus)
+│   ├── index.tsx                   # Renderer entry (registers pages, menus & preferences)
 │   ├── components/
 │   │   ├── sre-chat.tsx            # Main chat UI component
 │   │   ├── markdown-renderer.tsx   # Markdown to HTML renderer
@@ -110,11 +134,13 @@ src/
 │   │   └── sre-icon.tsx            # Sidebar icon
 │   ├── pages/
 │   │   └── sre-assistant-page.tsx  # Freelens cluster page wrapper
+│   ├── preferences/
+│   │   └── sre-preferences.tsx     # Freelens App Preferences panel
 │   ├── services/
 │   │   ├── ollama-service.ts       # Ollama API client (streaming)
 │   │   └── k8s-context-service.ts  # Kubernetes context gatherer
 │   └── stores/
-│       └── chat-store.ts           # MobX state management
+│       └── chat-store.ts           # MobX state management (persisted settings)
 └── common/
     └── types.ts                    # Shared TypeScript types
 ```
