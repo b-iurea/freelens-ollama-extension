@@ -29,11 +29,12 @@ const S = {
     display: "flex",
     flexDirection: "column" as const,
     height: "100%",
-    width: "100%",
     background: "var(--mainBackground, #1e1e2e)",
     color: "var(--textColorPrimary, #cdd6f4)",
     fontFamily: "var(--font-main, Roboto, sans-serif)",
     overflow: "hidden",
+    paddingBottom: "40px",
+    boxSizing: "border-box" as const,
   },
   header: {
     display: "flex",
@@ -48,6 +49,22 @@ const S = {
     display: "flex",
     alignItems: "center",
     gap: "8px",
+  },
+  backBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 28,
+    height: 28,
+    border: "1px solid var(--borderColor, #313244)",
+    borderRadius: "6px",
+    background: "transparent",
+    color: "var(--textColorSecondary, #a6adc8)",
+    fontSize: "14px",
+    cursor: "pointer",
+    flexShrink: 0,
+    padding: 0,
+    lineHeight: 1,
   },
   headerTitle: {
     margin: 0,
@@ -108,13 +125,12 @@ const S = {
     display: "flex",
     alignItems: "center",
     gap: "10px",
-    padding: "6px 16px",
+    padding: "8px 16px",
     background: "rgba(137,180,250,.05)",
     borderBottom: "1px solid var(--borderColor, #313244)",
-    fontSize: "11px",
+    fontSize: "12px",
     color: "var(--textColorSecondary, #a6adc8)",
     flexShrink: 0,
-    flexWrap: "wrap" as const,
   },
   chip: {
     display: "inline-flex",
@@ -134,6 +150,16 @@ const S = {
     borderRadius: "10px",
     background: "rgba(249,226,175,.1)",
     color: "#f9e2af",
+    fontWeight: 500,
+  },
+  chipOk: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "3px",
+    padding: "2px 8px",
+    borderRadius: "10px",
+    background: "rgba(166,227,161,.1)",
+    color: "#a6e3a1",
     fontWeight: 500,
   },
   /* error */
@@ -196,7 +222,7 @@ const S = {
   msgRow: (isUser: boolean) => ({
     display: "flex",
     gap: "8px",
-    maxWidth: "85%",
+    width: "50%",
     alignSelf: isUser ? "flex-end" : "flex-start",
     flexDirection: (isUser ? "row-reverse" : "row") as any,
   }),
@@ -221,6 +247,7 @@ const S = {
     background: isUser ? "#89b4fa" : "var(--layoutTabsBackground, #181825)",
     color: isUser ? "#1e1e2e" : "var(--textColorPrimary, #cdd6f4)",
     border: isUser ? "none" : "1px solid var(--borderColor, #313244)",
+    overflow: "hidden" as const,
   }),
   cursor: {
     display: "inline-block",
@@ -233,14 +260,16 @@ const S = {
     animation: "k8s-sre-blink .8s infinite",
   },
   /* input area */
+  inputBar: {
+    flexShrink: 0,
+    borderTop: "1px solid var(--borderColor, #313244)",
+    background: "var(--layoutTabsBackground, #181825)",
+  },
   inputArea: {
     display: "flex",
     alignItems: "flex-end",
     gap: "8px",
     padding: "10px 16px 14px",
-    borderTop: "1px solid var(--borderColor, #313244)",
-    background: "var(--layoutTabsBackground, #181825)",
-    flexShrink: 0,
   },
   inputWrap: {
     flex: 1,
@@ -365,6 +394,13 @@ export const SreChat = observer(() => {
       {/* ── Header ── */}
       <div style={S.header}>
         <div style={S.headerLeft}>
+          <button
+            style={S.backBtn}
+            onClick={() => window.history.back()}
+            title="Back to cluster"
+          >
+            ←
+          </button>
           <span style={{ fontSize: "18px" }}>🤖</span>
           <h2 style={S.headerTitle}>K8s SRE Assistant</h2>
         </div>
@@ -405,11 +441,11 @@ export const SreChat = observer(() => {
         <div style={S.ctx}>
           <span>📡</span>
           <span style={S.chip}>{ctx.clusterName}</span>
-          <span style={S.chip}>🟢 {ctx.nodes.length} Nodes</span>
-          <span style={S.chip}>📦 {ctx.pods.length} Pods</span>
-          <span style={S.chip}>🚀 {ctx.deployments.length} Deploy</span>
-          <span style={S.chip}>🔌 {ctx.services.length} Svc</span>
-          {warnCount > 0 && <span style={S.chipWarn}>⚠️ {warnCount} Warn</span>}
+          {warnCount > 0 ? (
+            <span style={S.chipWarn}>⚠️ {warnCount} Warning{warnCount > 1 ? "s" : ""}</span>
+          ) : (
+            <span style={S.chipOk}>✓ Healthy</span>
+          )}
         </div>
       )}
 
@@ -462,34 +498,36 @@ export const SreChat = observer(() => {
         )}
       </div>
 
-      {/* ── Input ── */}
-      <div style={S.inputArea}>
-        <div style={S.inputWrap}>
-          <textarea
-            ref={taRef}
-            style={S.textarea}
-            value={input}
-            onChange={onTaChange}
-            onKeyDown={onKey}
-            placeholder={connected ? "Ask about your cluster… (Shift+Enter for new line)" : "Connect to Ollama first (see Preferences)…"}
-            disabled={!connected}
-            rows={1}
-          />
+      {/* ── Input bar ── */}
+      <div style={S.inputBar}>
+        <div style={S.inputArea}>
+          <div style={S.inputWrap}>
+            <textarea
+              ref={taRef}
+              style={S.textarea}
+              value={input}
+              onChange={onTaChange}
+              onKeyDown={onKey}
+              placeholder={connected ? "Ask about your cluster… (Shift+Enter for new line)" : "Connect to Ollama first (see Preferences)…"}
+              disabled={!connected}
+              rows={1}
+            />
+          </div>
+          {chatStore.isLoading ? (
+            <button style={S.stopBtn} onClick={() => chatStore.cancelStream()} title="Stop">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+            </button>
+          ) : (
+            <button
+              style={S.sendBtn(!!input.trim() && connected)}
+              onClick={send}
+              disabled={!input.trim() || !connected}
+              title="Send"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+            </button>
+          )}
         </div>
-        {chatStore.isLoading ? (
-          <button style={S.stopBtn} onClick={() => chatStore.cancelStream()} title="Stop">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
-          </button>
-        ) : (
-          <button
-            style={S.sendBtn(!!input.trim() && connected)}
-            onClick={send}
-            disabled={!input.trim() || !connected}
-            title="Send"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
-          </button>
-        )}
       </div>
     </div>
   );
@@ -531,3 +569,5 @@ function LoadingDots() {
     </div>
   );
 }
+
+
