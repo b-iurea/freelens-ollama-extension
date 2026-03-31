@@ -11,14 +11,18 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 - **👁️ Cluster Awareness** — The AI sees your pods, deployments, services, nodes, and events in real-time
 - **🔄 Live Context Refresh** — Automatically gathers cluster state before each conversation
 - **📡 Ollama Integration** — Uses local Ollama for privacy-first AI (no data leaves your machine)
-- **💬 Streaming Responses** — Real-time streaming of AI responses
-- **🎨 Beautiful UI** — Modern chat interface with Markdown rendering, code blocks, and tables
+- **💬 Streaming Responses** — Real-time streaming with a block-level Markdown renderer safe for incomplete output
+- **🎨 Beautiful UI** — Modern chat bubbles with Markdown rendering, syntax-highlighted code blocks, and tables
 - **⚡ Suggested Queries** — Quick-start prompts for common SRE tasks
 - **🛑 Cancelable** — Stop AI generation at any time
+- **🧠 In-Chat Model Selector** — Switch Ollama models directly from the chat header without leaving the conversation
+- **📡 Context Bar** — Shows the active cluster name and health status (warning count or ✓ Healthy)
+- **⬅️ Back Navigation** — One-click return to the cluster dashboard
+- **🖥️ Freelens-Native Layout** — Coexists with the Freelens sidebar (Workloads, Network, Storage…) and native bottom bar (Terminal, Create Resource)
 - **⚙️ Preferences Panel** — Dedicated settings page in Freelens preferences to configure endpoint, model, and behavior
 - **🔌 Connection Testing** — One-click test with detailed debug log and automatic `fetch` / `XHR` fallback
 - **📦 Model Browser** — Discover and select from all models available on your Ollama instance (with size info)
-- **💾 Persistent Settings** — Endpoint, model, and options are saved to `localStorage` and synced across Freelens windows
+- **💾 Persistent Settings** — Endpoint, model, and options are saved to `localStorage` and synced across Freelens contexts
 
 ## 📋 Requirements
 
@@ -114,9 +118,17 @@ Once connected, the model dropdown lists every model available on the Ollama ins
 
 > **Tip for remote Ollama:** set `OLLAMA_ORIGINS=*` and `OLLAMA_HOST=0.0.0.0:11434` on the Ollama host to allow connections from Freelens.
 
-### In-Chat Settings
+### In-Chat Model Selector
 
-Click the **⚙️ Settings** button in the chat header to toggle inline settings without leaving the conversation.
+The chat header includes a **model dropdown** that lists all available Ollama models. Switching model takes effect immediately — no need to visit the Preferences page.
+
+### Freelens Integration
+
+The extension is designed to **coexist with native Freelens features**:
+
+- The **sidebar** (Workloads, Network, Storage, Helm, etc.) stays visible alongside the chat.
+- The **native bottom bar** (Terminal, Create Resource) remains accessible below the chat input.
+- Click **← Back** in the chat header to return to the cluster dashboard.
 
 ## 🏗️ Architecture
 
@@ -127,20 +139,19 @@ src/
 ├── renderer/
 │   ├── index.tsx                   # Renderer entry (registers pages, menus & preferences)
 │   ├── components/
-│   │   ├── sre-chat.tsx            # Main chat UI component
-│   │   ├── markdown-renderer.tsx   # Markdown to HTML renderer
-│   │   └── SreAssistant.module.scss # Scoped styles
+│   │   ├── sre-chat.tsx            # Main chat UI (header, context bar, messages, input)
+│   │   └── markdown-renderer.tsx   # Streaming-safe block-level Markdown → HTML renderer
 │   ├── icons/
 │   │   └── sre-icon.tsx            # Sidebar icon
 │   ├── pages/
-│   │   └── sre-assistant-page.tsx  # Freelens cluster page wrapper
+│   │   └── sre-assistant-page.tsx  # Freelens cluster page wrapper (sidebar-friendly layout)
 │   ├── preferences/
 │   │   └── sre-preferences.tsx     # Freelens App Preferences panel
 │   ├── services/
-│   │   ├── ollama-service.ts       # Ollama API client (streaming)
+│   │   ├── ollama-service.ts       # Ollama API client (streaming, fetch + XHR fallback)
 │   │   └── k8s-context-service.ts  # Kubernetes context gatherer
 │   └── stores/
-│       └── chat-store.ts           # MobX state management (persisted settings)
+│       └── chat-store.ts           # MobX state management (cross-context settings sync)
 └── common/
     └── types.ts                    # Shared TypeScript types
 ```
@@ -169,10 +180,11 @@ pnpm pack:dev
 - [ ] **kubectl execution** — Execute kubectl commands directly from chat suggestions
 - [ ] **Multiple providers** — Support for OpenAI, Anthropic, Azure OpenAI
 - [ ] **Log analysis** — Stream and analyze pod logs
-- [ ] **YAML generation** — Generate and apply Kubernetes manifests
+- [ ] **YAML generation** — Generate and apply Kubernetes manifests from the chat
 - [ ] **Incident history** — Keep track of troubleshooting sessions
 - [ ] **Custom system prompts** — Customize the AI personality and focus
 - [ ] **Resource monitoring** — Real-time metrics integration
+- [ ] **Multi-cluster** — Switch context and compare clusters from the chat
 
 ## 📄 License
 
