@@ -19,10 +19,11 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 - **📡 Context Bar** — Shows the active cluster name and health status (warning count or ✓ Healthy)
 - **⬅️ Back Navigation** — One-click return to the cluster dashboard
 - **🖥️ Freelens-Native Layout** — Coexists with the Freelens sidebar (Workloads, Network, Storage…) and native bottom bar (Terminal, Create Resource)
-- **⚙️ Preferences Panel** — Dedicated settings page in Freelens preferences to configure endpoint, model, and behavior
-- **🔌 Connection Testing** — One-click test with detailed debug log and automatic `fetch` / `XHR` fallback
+- **🔌 In-Chat Connection Panel** — Click the Ollama badge to configure endpoint, test the connection, and see a full debug log — all without leaving the chat
+- **⚙️ In-Chat Model Parameters** — Tune temperature, top_p, top_k, repeat penalty, and max tokens from a popover panel in the chat header
 - **📦 Model Browser** — Discover and select from all models available on your Ollama instance (with size info)
-- **💾 Persistent Settings** — Endpoint, model, and options are saved to `localStorage` and synced across Freelens contexts
+- **💾 Persistent Settings** — Endpoint, model, parameters, and options are saved to `localStorage` and synced across Freelens contexts
+- **🛠️ Minimal Preferences** — Endpoint and auto-refresh are also available in Freelens Preferences for initial setup
 
 ## 📋 Requirements
 
@@ -94,33 +95,49 @@ Then in Freelens: **Extensions** → **Add Local Extension** → select the `.tg
 
 ## ⚙️ Configuration
 
-### Preferences Panel
+### Chat Header Controls
 
-Open **Freelens → Preferences → K8s SRE Assistant** to access the dedicated settings page.
+All primary configuration lives directly in the chat UI — no need to leave the conversation.
+
+#### 🔌 Connection Panel (Ollama badge)
+
+Click the **Ollama** / **Disconnected** badge in the header to open the connection overlay:
+
+- **Endpoint input** — set the Ollama URL (e.g. `http://localhost:11434`).
+- **Test Connection** — one-click test with automatic `fetch` → `XHR` fallback.
+- **Debug log** — detailed diagnostics with troubleshooting hints on failure.
+- **Status indicator** — ✓ Connected (with model count) / ✕ Connection failed.
+
+> **Tip for remote Ollama:** set `OLLAMA_ORIGINS=*` and `OLLAMA_HOST=0.0.0.0:11434` on the Ollama host.
+
+#### 🧠 Model Selector
+
+The header dropdown lists all available Ollama models. Switching model takes effect immediately.
+
+#### ⚙️ Model Parameters (⚙️ button)
+
+Click the **⚙️** button to open the parameters popover:
+
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| Temperature | 0 – 2 | Creativity vs determinism |
+| Top P | 0 – 1 | Nucleus sampling threshold |
+| Top K | 0 – 200 | Token vocabulary limit |
+| Repeat Penalty | 1 – 2 | Penalize repeated tokens |
+| Max Tokens | -1 – 8192 | Response length (-1 = unlimited) |
+
+All parameters are saved to `localStorage` and applied to every request.
+
+### Preferences Panel (minimal)
+
+Open **Freelens → Preferences → K8s SRE Assistant** for basic setup:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Ollama Endpoint | `http://localhost:11434` | URL of your Ollama instance. Supports local and remote setups. |
-| AI Model | `llama3.2` | Select from discovered models or type a name manually. |
-| Auto-refresh context | `true` | Gather cluster state (pods, deployments, services, nodes, events) before each message. |
+| Ollama Endpoint | `http://localhost:11434` | URL of your Ollama instance. |
+| Auto-refresh context | `true` | Gather cluster state before each message. |
 
-#### Connection Testing
-
-Click **Test Connection** to verify the Ollama endpoint. The panel shows:
-
-- A **status indicator** (✓ Connected / ✕ Error) with a detailed debug log.
-- Automatic fallback from `fetch` to `XHR` if the first method fails (useful in Electron/restrictive environments).
-- Troubleshooting hints when the connection cannot be established (e.g. `OLLAMA_ORIGINS`, `OLLAMA_HOST`).
-
-#### Model Browser
-
-Once connected, the model dropdown lists every model available on the Ollama instance together with its size. If no connection is available you can still type a model name manually.
-
-> **Tip for remote Ollama:** set `OLLAMA_ORIGINS=*` and `OLLAMA_HOST=0.0.0.0:11434` on the Ollama host to allow connections from Freelens.
-
-### In-Chat Model Selector
-
-The chat header includes a **model dropdown** that lists all available Ollama models. Switching model takes effect immediately — no need to visit the Preferences page.
+Model selection, parameters, and connection testing are all in the chat header.
 
 ### Freelens Integration
 
@@ -139,14 +156,14 @@ src/
 ├── renderer/
 │   ├── index.tsx                   # Renderer entry (registers pages, menus & preferences)
 │   ├── components/
-│   │   ├── sre-chat.tsx            # Main chat UI (header, context bar, messages, input)
+│   │   ├── sre-chat.tsx            # Main chat UI + ConnectionPanel + ModelParamsPanel overlays
 │   │   └── markdown-renderer.tsx   # Streaming-safe block-level Markdown → HTML renderer
 │   ├── icons/
 │   │   └── sre-icon.tsx            # Sidebar icon
 │   ├── pages/
 │   │   └── sre-assistant-page.tsx  # Freelens cluster page wrapper (sidebar-friendly layout)
 │   ├── preferences/
-│   │   └── sre-preferences.tsx     # Freelens App Preferences panel
+│   │   └── sre-preferences.tsx     # Minimal Freelens Preferences (endpoint + auto-refresh)
 │   ├── services/
 │   │   ├── ollama-service.ts       # Ollama API client (streaming, fetch + XHR fallback)
 │   │   └── k8s-context-service.ts  # Kubernetes context gatherer
@@ -175,19 +192,8 @@ pnpm build:production
 pnpm pack:dev
 ```
 
-## 🗺️ Roadmap
-
-- [ ] **kubectl execution** — Execute kubectl commands directly from chat suggestions
-- [ ] **Multiple providers** — Support for OpenAI, Anthropic, Azure OpenAI
-- [ ] **Log analysis** — Stream and analyze pod logs
-- [ ] **YAML generation** — Generate and apply Kubernetes manifests from the chat
-- [ ] **Incident history** — Keep track of troubleshooting sessions
-- [ ] **Custom system prompts** — Customize the AI personality and focus
-- [ ] **Resource monitoring** — Real-time metrics integration
-- [ ] **Multi-cluster** — Switch context and compare clusters from the chat
-
 ## 📄 License
 
-Copyright (c) 2026 Freelens K8s SRE Assistant Authors.
+Copyright (c) 2026 biurea.
 
 [MIT License](https://opensource.org/licenses/MIT)
