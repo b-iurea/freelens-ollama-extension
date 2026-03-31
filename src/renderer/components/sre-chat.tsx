@@ -49,6 +49,22 @@ const S = {
     alignItems: "center",
     gap: "8px",
   },
+  backBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 28,
+    height: 28,
+    border: "1px solid var(--borderColor, #313244)",
+    borderRadius: "6px",
+    background: "transparent",
+    color: "var(--textColorSecondary, #a6adc8)",
+    fontSize: "14px",
+    cursor: "pointer",
+    flexShrink: 0,
+    padding: 0,
+    lineHeight: 1,
+  },
   headerTitle: {
     margin: 0,
     fontSize: "15px",
@@ -196,7 +212,7 @@ const S = {
   msgRow: (isUser: boolean) => ({
     display: "flex",
     gap: "8px",
-    maxWidth: "85%",
+    width: "50%",
     alignSelf: isUser ? "flex-end" : "flex-start",
     flexDirection: (isUser ? "row-reverse" : "row") as any,
   }),
@@ -221,6 +237,7 @@ const S = {
     background: isUser ? "#89b4fa" : "var(--layoutTabsBackground, #181825)",
     color: isUser ? "#1e1e2e" : "var(--textColorPrimary, #cdd6f4)",
     border: isUser ? "none" : "1px solid var(--borderColor, #313244)",
+    overflow: "hidden" as const,
   }),
   cursor: {
     display: "inline-block",
@@ -365,6 +382,13 @@ export const SreChat = observer(() => {
       {/* ── Header ── */}
       <div style={S.header}>
         <div style={S.headerLeft}>
+          <button
+            style={S.backBtn}
+            onClick={() => window.history.back()}
+            title="Back to cluster"
+          >
+            ←
+          </button>
           <span style={{ fontSize: "18px" }}>🤖</span>
           <h2 style={S.headerTitle}>K8s SRE Assistant</h2>
         </div>
