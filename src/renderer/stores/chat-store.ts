@@ -57,6 +57,7 @@ export class ChatStore {
       setEndpoint: action,
       setModel: action,
       setAutoRefreshContext: action,
+      syncSettings: action,
       clearMessages: action,
       setError: action,
       checkConnection: action,
@@ -102,27 +103,35 @@ export class ChatStore {
     }
   }
 
+  /**
+   * Re-read settings from localStorage and sync to OllamaService.
+   * Bridges preferences ↔ cluster-page contexts that may hold separate singletons.
+   */
+  syncSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (!raw) return;
+      const s: PersistedSettings = JSON.parse(raw);
+      if (s.ollamaEndpoint && s.ollamaEndpoint !== this.ollamaEndpoint) {
+        this.ollamaEndpoint = s.ollamaEndpoint;
+        this.ollamaService.setEndpoint(s.ollamaEndpoint);
+      }
+      if (s.ollamaModel && s.ollamaModel !== this.ollamaModel) {
+        this.ollamaModel = s.ollamaModel;
+        this.ollamaService.setModel(s.ollamaModel);
+      }
+      if (typeof s.autoRefreshContext === "boolean") {
+        this.autoRefreshContext = s.autoRefreshContext;
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }
+
   private onStorageChange = (e: StorageEvent) => {
     if (e.key === SETTINGS_KEY && e.newValue) {
-      try {
-        const s: PersistedSettings = JSON.parse(e.newValue);
-        runInAction(() => {
-          if (s.ollamaEndpoint && s.ollamaEndpoint !== this.ollamaEndpoint) {
-            this.ollamaEndpoint = s.ollamaEndpoint;
-            this.ollamaService.setEndpoint(s.ollamaEndpoint);
-          }
-          if (s.ollamaModel && s.ollamaModel !== this.ollamaModel) {
-            this.ollamaModel = s.ollamaModel;
-            this.ollamaService.setModel(s.ollamaModel);
-          }
-          if (typeof s.autoRefreshContext === "boolean") {
-            this.autoRefreshContext = s.autoRefreshContext;
-          }
-        });
-        this.checkConnection();
-      } catch {
-        // ignore parse errors
-      }
+      runInAction(() => this.syncSettings());
+      this.checkConnection();
     }
   };
 
@@ -161,6 +170,7 @@ export class ChatStore {
   }
 
   async checkConnection() {
+    this.syncSettings();
     try {
       const connected = await this.ollamaService.isAvailable();
       const models = connected ? await this.ollamaService.listModels() : [];
@@ -197,6 +207,9 @@ export class ChatStore {
 
   async sendMessage(content: string) {
     if (!content.trim() || this.isLoading) return;
+
+    // Re-read settings in case preferences changed in another context
+    this.syncSettings();
 
     // Add user message
     const userMessage: ChatMessage = {
