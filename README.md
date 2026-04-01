@@ -15,6 +15,7 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 ![Connection Panel](docs/screenshots/connection-panel.png) | **Connection panel** — Configure Ollama endpoint, test connectivity |
 ![Model Params](docs/screenshots/model-params.png) | **Model parameters** — Tune temperature, top_p, top_k, repeat penalty |
 ![Performance Stats](docs/screenshots/perf-stats.png) | **Performance stats** — Tokens/sec, prompt eval, generation time |
+![Friendly welcome](docs/screenshots/friendly-welcome.png) | **Friendly cluster overview**
 
 ## ✨ Features
 
