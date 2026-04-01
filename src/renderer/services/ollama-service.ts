@@ -137,6 +137,21 @@ export class OllamaService {
   /** Performance stats from the last completed stream. */
   lastStats: OllamaPerformanceStats | null = null;
 
+  /**
+   * Sanitise model params before sending to Ollama.
+   * Cloud Ollama instances reject `num_predict: -1` (must be positive).
+   * Removes invalid or default-equivalent values to avoid API errors.
+   */
+  private static sanitiseOptions(params?: OllamaModelParams): Partial<OllamaModelParams> | undefined {
+    if (!params) return undefined;
+    const opts: Partial<OllamaModelParams> = { ...params };
+    // Cloud Ollama rejects num_predict <= 0; omit it to let the server use its default
+    if (opts.num_predict != null && opts.num_predict <= 0) {
+      delete opts.num_predict;
+    }
+    return Object.keys(opts).length > 0 ? opts : undefined;
+  }
+
   constructor(endpoint?: string, model?: string) {
     this.endpoint = endpoint || DEFAULT_ENDPOINT;
     this.model = model || DEFAULT_MODEL;
@@ -375,13 +390,13 @@ RULES:
       })),
     ];
 
-    const plainOptions = modelParams ? { ...modelParams } : undefined;
+    const options = OllamaService.sanitiseOptions(modelParams);
 
     const request: OllamaChatRequest = {
       model: this.model,
       messages: apiMessages,
       stream: true,
-      ...(plainOptions ? { options: plainOptions } : {}),
+      ...(options ? { options } : {}),
     };
 
     console.log("[K8s SRE] streamChat request →", JSON.stringify({
@@ -471,11 +486,13 @@ RULES:
       })),
     ];
 
+    const options = OllamaService.sanitiseOptions(modelParams);
+
     const request: OllamaChatRequest = {
       model: this.model,
       messages: apiMessages,
       stream: false,
-      ...(modelParams ? { options: modelParams } : {}),
+      ...(options ? { options } : {}),
     };
 
     const res = await nodeRequest(`${this.endpoint}/api/chat`, {
@@ -518,11 +535,13 @@ RULES:
     this.abortController = new AbortController();
     this.lastStats = null;
 
+    const options = OllamaService.sanitiseOptions(modelParams);
+
     const request: OllamaChatRequest = {
       model: this.model,
       messages: assembledMessages,
       stream: true,
-      ...(modelParams ? { options: { ...modelParams } } : {}),
+      ...(options ? { options } : {}),
     };
 
     console.log("[K8s SRE] streamChatAssembled →", JSON.stringify({

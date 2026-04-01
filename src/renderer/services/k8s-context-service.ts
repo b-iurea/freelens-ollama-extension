@@ -106,6 +106,63 @@ const MAX_DEPLOYMENTS = 80;
 const MAX_SERVICES = 80;
 const MAX_EVENTS = 40;
 
+/* ── Anomaly-first sorting helpers ──
+ * Place unhealthy resources before healthy ones so truncation preserves
+ * the most actionable information for the AI.
+ */
+
+/** Pod statuses that indicate a problem, ordered by severity. */
+const POD_SEVERITY: Record<string, number> = {
+  "CrashLoopBackOff": 0,
+  "Error": 1,
+  "OOMKilled": 2,
+  "ImagePullBackOff": 3,
+  "ErrImagePull": 4,
+  "CreateContainerConfigError": 5,
+  "Init:Error": 6,
+  "Init:CrashLoopBackOff": 7,
+  "Pending": 8,
+  "Terminating": 9,
+  "Unknown": 10,
+};
+const HEALTHY_SEVERITY = 99;
+
+function podSeverity(status: string): number {
+  return POD_SEVERITY[status] ?? (status === "Running" ? HEALTHY_SEVERITY : 50);
+}
+
+function sortPodsByAnomaly(pods: any[]): any[] {
+  return [...pods].sort((a, b) => {
+    const sa = a.getStatusMessage?.() ?? a.status?.phase ?? "Unknown";
+    const sb = b.getStatusMessage?.() ?? b.status?.phase ?? "Unknown";
+    return podSeverity(sa) - podSeverity(sb);
+  });
+}
+
+function sortDeploymentsByAnomaly(deps: any[]): any[] {
+  return [...deps].sort((a, b) => {
+    const readyA = a.status?.readyReplicas ?? 0;
+    const desiredA = a.spec?.replicas ?? 0;
+    const readyB = b.status?.readyReplicas ?? 0;
+    const desiredB = b.spec?.replicas ?? 0;
+    // Deployments with replica mismatch (unhealthy) sort first
+    const mismatchA = desiredA > 0 && readyA < desiredA ? 0 : 1;
+    const mismatchB = desiredB > 0 && readyB < desiredB ? 0 : 1;
+    return mismatchA - mismatchB;
+  });
+}
+
+function sortNodesByAnomaly(nodes: any[]): any[] {
+  return [...nodes].sort((a, b) => {
+    const sa = getNodeStatus(a);
+    const sb = getNodeStatus(b);
+    // NotReady before Ready
+    if (sa !== "Ready" && sb === "Ready") return -1;
+    if (sa === "Ready" && sb !== "Ready") return 1;
+    return 0;
+  });
+}
+
 export class K8sContextService {
   /**
    * Gather the current cluster context.
@@ -161,7 +218,8 @@ export class K8sContextService {
       }
       if (pods?.length) {
         console.log("[K8s SRE] Pods: total", pods.length, filterNamespace ? `(ns=${filterNamespace})` : "(all)");
-        context.pods = pods.slice(0, MAX_PODS).map((pod: any) => {
+        // Sort unhealthy pods first so truncation preserves anomalies
+        context.pods = sortPodsByAnomaly(pods).slice(0, MAX_PODS).map((pod: any) => {
           const meta = pod.metadata ?? pod;
           return {
             name: pod.getName?.() ?? meta.name ?? "unknown",
@@ -187,7 +245,8 @@ export class K8sContextService {
       }
       if (deps?.length) {
         console.log("[K8s SRE] Deployments: total", deps.length, filterNamespace ? `(ns=${filterNamespace})` : "(all)");
-        context.deployments = deps.slice(0, MAX_DEPLOYMENTS).map((dep: any) => {
+        // Sort deployments with replica mismatch first
+        context.deployments = sortDeploymentsByAnomaly(deps).slice(0, MAX_DEPLOYMENTS).map((dep: any) => {
           const meta = dep.metadata ?? dep;
           return {
             name: dep.getName?.() ?? meta.name ?? "unknown",
@@ -237,7 +296,8 @@ export class K8sContextService {
       }
       if (nodes?.length) {
         console.log("[K8s SRE] Nodes: total", nodes.length);
-        context.nodes = nodes.map((node: any) => {
+        // Sort NotReady nodes first
+        context.nodes = sortNodesByAnomaly(nodes).map((node: any) => {
           const meta = node.metadata ?? node;
           return {
             name: node.getName?.() ?? meta.name ?? "unknown",

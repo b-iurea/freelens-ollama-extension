@@ -13,11 +13,11 @@ import type { ChatMessage } from "../../../common/types";
 
 /* ── Config ── */
 
-/** Number of conversation turns (user+assistant pairs) before triggering summarisation. */
+/** Number of user+assistant exchange pairs before triggering summarisation. */
 const SUMMARY_THRESHOLD = 20;
 
-/** How many of the most recent turns to keep verbatim (not summarised). */
-const KEEP_RECENT_TURNS = 5;
+/** How many of the most recent messages to keep verbatim (not summarised). */
+const KEEP_RECENT_TURNS = 10;
 
 /* ── Types ── */
 
@@ -86,10 +86,12 @@ export class SummaryManager {
   }
 
   /**
-   * Count turns (non-system, non-streaming messages) in the message array.
+   * Count exchange pairs (user+assistant) in the message array.
+   * A single user or assistant message counts as half a pair.
    */
   private static countTurns(messages: ChatMessage[]): number {
-    return messages.filter((m) => m.role !== "system" && !m.isStreaming).length;
+    const eligible = messages.filter((m) => m.role !== "system" && !m.isStreaming);
+    return Math.floor(eligible.length / 2);
   }
 
   /**
@@ -134,8 +136,40 @@ export class SummaryManager {
         .join("\n\n");
 
       const prompt = this.currentSummary
-        ? `You are a conversation summariser. Below is a previous summary followed by new conversation turns.\n\nPREVIOUS SUMMARY:\n${this.currentSummary}\n\nNEW TURNS:\n${transcript}\n\nCreate an updated, concise summary that captures all important K8s-related facts, decisions, problems discussed, and solutions proposed. Focus on information relevant to: "${query}". Output ONLY the summary, no preamble.`
-        : `You are a conversation summariser. Below is a conversation between a user and a Kubernetes SRE assistant.\n\n${transcript}\n\nCreate a concise summary that captures all important K8s-related facts, decisions, problems discussed, and solutions proposed. Focus on information relevant to: "${query}". Output ONLY the summary, no preamble.`;
+        ? `You are a conversation summariser for a Kubernetes SRE assistant.
+
+Below is a previous summary followed by new conversation turns.
+
+PREVIOUS SUMMARY:
+${this.currentSummary}
+
+NEW TURNS:
+${transcript}
+
+Create an updated summary with TWO clearly labelled sections:
+
+FACTS & DECISIONS:
+Bullet-point list of all confirmed K8s facts, resource names, namespaces, errors found, commands executed, fixes applied, and decisions made. Never drop facts from the previous summary — only add or correct them.
+
+ROLLING CONTEXT:
+A short paragraph capturing the current troubleshooting thread and open questions, focused on: "${query}".
+
+Output ONLY the two sections, no preamble.`
+        : `You are a conversation summariser for a Kubernetes SRE assistant.
+
+Below is a conversation between a user and the assistant.
+
+${transcript}
+
+Create a concise summary with TWO clearly labelled sections:
+
+FACTS & DECISIONS:
+Bullet-point list of all confirmed K8s facts, resource names, namespaces, errors found, commands executed, fixes applied, and decisions made.
+
+ROLLING CONTEXT:
+A short paragraph capturing the current troubleshooting thread and open questions, focused on: "${query}".
+
+Output ONLY the two sections, no preamble.`;
 
       console.log(
         "[K8s SRE] SummaryManager: compressing",

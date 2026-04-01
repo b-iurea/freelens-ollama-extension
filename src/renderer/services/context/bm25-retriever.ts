@@ -16,9 +16,18 @@ const B = 0.75;
 
 /* ── Helpers ── */
 
-/** Lowercase + split on non-alphanumeric (cheap tokeniser). */
+/**
+ * K8s-aware tokeniser.
+ * Preserves compound terms common in Kubernetes (dotted names like
+ * "kube-system", slash paths like "apps/v1", IPs like "10.0.0.1",
+ * label keys like "app.kubernetes.io/name") as single tokens,
+ * while still splitting normal prose.
+ */
 function tokenise(text: string): string[] {
-  return text.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 1);
+  const lower = text.toLowerCase();
+  // Match: dotted/slashed/hyphenated identifiers, IPs, or plain words
+  const matches = lower.match(/[a-z0-9](?:[a-z0-9._\-/]*[a-z0-9])?/g);
+  return matches ? matches.filter((t) => t.length > 1) : [];
 }
 
 /** Simple stop-word set — enough to skip the noisiest words. */

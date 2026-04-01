@@ -313,22 +313,18 @@ export class ChatStore {
         this.clusterContext || undefined,
       );
 
-      // 2. Maybe compress old turns in background (only if threshold reached)
-      //    This calls Ollama once, only when needed.
-      const summary = await this.summaryManager.maybeCompress(
-        this.messages,
-        userMessage.content,
-      );
+      // 2. Use existing summary (computed after previous response, not blocking)
+      const summary = this.summaryManager.getSummary();
 
-      // 3. Chunk the full history + BM25 retrieve top-5
-      const allChunks = this.chunkManager.buildChunks(this.messages);
-      const bm25Index = BM25Retriever.buildIndex(allChunks);
+      // 3. Chunk only non-summarised history for BM25 retrieval
+      //    Summarised turns are already captured in the summary —
+      //    retrieving them again would waste tokens and add noise.
+      const recentMessages = this.summaryManager.getRecentMessages(this.messages);
+      const nonSummarisedChunks = this.chunkManager.buildChunks(recentMessages);
+      const bm25Index = BM25Retriever.buildIndex(nonSummarisedChunks);
       const retrievedChunks = BM25Retriever.retrieve(bm25Index, userMessage.content, 5);
 
-      // 4. Get recent turns (not summarised)
-      const recentMessages = this.summaryManager.getRecentMessages(this.messages);
-
-      // 5. Assemble the final prompt
+      // 4. Assemble the final prompt
       const assembled = ContextBuilder.assemble(
         systemPrompt,
         summary,
@@ -339,7 +335,7 @@ export class ChatStore {
 
       console.log("[K8s SRE] Context pipeline →", JSON.stringify(assembled.debug));
 
-      // 6. Stream via Ollama using the assembled context
+      // 5. Stream via Ollama using the assembled context
       const stream = this.ollamaService.streamChatAssembled(
         assembled.messages,
         { ...this.modelParams },
@@ -371,6 +367,15 @@ export class ChatStore {
           this.lastPerformanceStats = { ...this.ollamaService.lastStats };
         }
       });
+
+      // 6. Post-response: compress old turns in background if threshold reached.
+      //    Runs AFTER the response is delivered so it doesn't add latency.
+      //    The summary will be ready for the *next* message.
+      if (this.summaryManager.shouldSummarise(this.messages)) {
+        this.summaryManager.maybeCompress(this.messages, userMessage.content).catch((e) => {
+          console.warn("[K8s SRE] Background summarisation failed:", e?.message);
+        });
+      }
     } catch (e: any) {
       runInAction(() => {
         this.error = `AI Error: ${e.message}`;
