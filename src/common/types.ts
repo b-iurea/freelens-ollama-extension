@@ -87,6 +87,27 @@ export interface OllamaStreamChunk {
     content: string;
   };
   done: boolean;
+  /* ── Performance fields (only present when done=true) ── */
+  total_duration?: number;       // nanoseconds
+  load_duration?: number;        // nanoseconds
+  prompt_eval_count?: number;    // tokens evaluated in the prompt
+  prompt_eval_duration?: number; // nanoseconds
+  eval_count?: number;           // tokens generated
+  eval_duration?: number;        // nanoseconds
+}
+
+/** Parsed performance stats from Ollama's final streaming chunk. */
+export interface OllamaPerformanceStats {
+  model: string;
+  totalDurationMs: number;
+  promptTokens: number;
+  promptEvalMs: number;
+  promptTokensPerSec: number;
+  generatedTokens: number;
+  generationMs: number;
+  tokensPerSec: number;
+  loadMs: number;
+  timestamp: number;
 }
 
 export interface OllamaModelInfo {

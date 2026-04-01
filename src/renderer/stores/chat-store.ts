@@ -6,7 +6,7 @@
  */
 
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
-import type { ChatMessage, ClusterContext, OllamaModelInfo, OllamaModelParams } from "../../common/types";
+import type { ChatMessage, ClusterContext, OllamaModelInfo, OllamaModelParams, OllamaPerformanceStats } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { K8sContextService } from "../services/k8s-context-service";
 import { OllamaService } from "../services/ollama-service";
@@ -41,6 +41,7 @@ export class ChatStore {
   modelParams: OllamaModelParams = { ...DEFAULT_MODEL_PARAMS };
   selectedNamespace = "__all__";
   availableNamespaces: string[] = [];
+  lastPerformanceStats: OllamaPerformanceStats | null = null;
 
   private ollamaService: OllamaService;
   private chunkManager: ChunkManager;
@@ -69,6 +70,7 @@ export class ChatStore {
       modelParams: observable,
       selectedNamespace: observable,
       availableNamespaces: observable,
+      lastPerformanceStats: observable,
       hasMessages: computed,
       lastMessage: computed,
       setEndpoint: action,
@@ -363,6 +365,10 @@ export class ChatStore {
             ...this.messages[finalIndex],
             isStreaming: false,
           };
+        }
+        // Capture performance stats from Ollama's final chunk
+        if (this.ollamaService.lastStats) {
+          this.lastPerformanceStats = { ...this.ollamaService.lastStats };
         }
       });
     } catch (e: any) {

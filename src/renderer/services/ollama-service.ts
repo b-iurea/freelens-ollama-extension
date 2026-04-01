@@ -17,6 +17,7 @@ import type {
   OllamaChatRequest,
   OllamaModelInfo,
   OllamaModelParams,
+  OllamaPerformanceStats,
   OllamaStreamChunk,
 } from "../../common/types";
 
@@ -133,6 +134,9 @@ export class OllamaService {
   private abortController: AbortController | null = null;
   private currentAbort: (() => void) | null = null;
 
+  /** Performance stats from the last completed stream. */
+  lastStats: OllamaPerformanceStats | null = null;
+
   constructor(endpoint?: string, model?: string) {
     this.endpoint = endpoint || DEFAULT_ENDPOINT;
     this.model = model || DEFAULT_MODEL;
@@ -152,6 +156,29 @@ export class OllamaService {
 
   getModel(): string {
     return this.model;
+  }
+
+  /** Parse performance stats from the final Ollama streaming chunk. */
+  private parseStats(chunk: OllamaStreamChunk): OllamaPerformanceStats | null {
+    if (!chunk.done) return null;
+    const ns = 1_000_000; // nanoseconds → milliseconds
+    const totalMs = (chunk.total_duration || 0) / ns;
+    const promptMs = (chunk.prompt_eval_duration || 0) / ns;
+    const genMs = (chunk.eval_duration || 0) / ns;
+    const promptTokens = chunk.prompt_eval_count || 0;
+    const genTokens = chunk.eval_count || 0;
+    return {
+      model: chunk.model || this.model,
+      totalDurationMs: Math.round(totalMs),
+      promptTokens,
+      promptEvalMs: Math.round(promptMs),
+      promptTokensPerSec: promptMs > 0 ? Math.round((promptTokens / promptMs) * 1000) : 0,
+      generatedTokens: genTokens,
+      generationMs: Math.round(genMs),
+      tokensPerSec: genMs > 0 ? parseFloat(((genTokens / genMs) * 1000).toFixed(1)) : 0,
+      loadMs: Math.round((chunk.load_duration || 0) / ns),
+      timestamp: Date.now(),
+    };
   }
 
   /**
@@ -489,6 +516,7 @@ RULES:
     modelParams?: OllamaModelParams,
   ): AsyncGenerator<string, void, unknown> {
     this.abortController = new AbortController();
+    this.lastStats = null;
 
     const request: OllamaChatRequest = {
       model: this.model,
@@ -527,7 +555,13 @@ RULES:
           try {
             const chunk: OllamaStreamChunk = JSON.parse(line);
             if (chunk.message?.content) yield chunk.message.content;
-            if (chunk.done) return;
+            if (chunk.done) {
+              this.lastStats = this.parseStats(chunk);
+              if (this.lastStats) {
+                console.log("[K8s SRE] Performance →", JSON.stringify(this.lastStats));
+              }
+              return;
+            }
           } catch { /* skip malformed */ }
         }
       }
@@ -536,6 +570,9 @@ RULES:
         try {
           const chunk: OllamaStreamChunk = JSON.parse(buffer);
           if (chunk.message?.content) yield chunk.message.content;
+          if (chunk.done) {
+            this.lastStats = this.parseStats(chunk);
+          }
         } catch { /* ignore */ }
       }
     } catch (error: any) {

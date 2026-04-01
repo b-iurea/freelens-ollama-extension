@@ -387,6 +387,7 @@ export const SreChat = observer(() => {
 
   const [showParams, setShowParams] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const connected = chatStore.isOllamaConnected;
   const ctx = chatStore.clusterContext;
   const warnCount = ctx ? ctx.events.filter((ev) => ev.type === "Warning").length : 0;
@@ -445,6 +446,21 @@ export const SreChat = observer(() => {
               ⚙️
             </button>
           )}
+          {connected && chatStore.lastPerformanceStats && (
+            <button
+              style={{
+                ...S.btn,
+                fontSize: "10px",
+                padding: "3px 8px",
+                color: "#a6e3a1",
+                borderColor: "rgba(166,227,161,.3)",
+              }}
+              onClick={() => setShowStats((p) => !p)}
+              title="Last response performance stats"
+            >
+              ⚡ {chatStore.lastPerformanceStats.tokensPerSec} t/s
+            </button>
+          )}
           <button style={S.btn} onClick={() => chatStore.refreshClusterContext()} disabled={chatStore.isGatheringContext}>
             🔄 {chatStore.isGatheringContext ? "Scanning…" : "Refresh"}
           </button>
@@ -459,6 +475,9 @@ export const SreChat = observer(() => {
 
       {/* ── Connection panel (same context) ── */}
       {showConnection && <ConnectionPanel onClose={() => setShowConnection(false)} />}
+
+      {/* ── Performance stats panel ── */}
+      {showStats && <StatsPanel onClose={() => setShowStats(false)} />}
 
       {/* ── Context bar ── */}
       {(ctx || chatStore.isGatheringContext) && (
@@ -922,4 +941,111 @@ const ConnectionPanel = observer(({ onClose }: { onClose: () => void }) => {
   );
 });
 
+/* ── Performance Stats panel ── */
+const statRow = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "4px 0",
+  borderBottom: "1px solid rgba(49,50,68,.5)",
+};
+const statLabel = {
+  fontSize: "11px",
+  color: "var(--textColorSecondary, #a6adc8)",
+};
+const statValue = {
+  fontSize: "12px",
+  fontWeight: 600,
+  fontFamily: "monospace",
+  color: "#89b4fa",
+};
+const statHighlight = {
+  fontSize: "14px",
+  fontWeight: 700,
+  fontFamily: "monospace",
+  color: "#a6e3a1",
+};
 
+const StatsPanel = observer(({ onClose }: { onClose: () => void }) => {
+  const stats = chatStore.lastPerformanceStats;
+
+  if (!stats) return null;
+
+  const speedColor = stats.tokensPerSec >= 20 ? "#a6e3a1" : stats.tokensPerSec >= 8 ? "#f9e2af" : "#f38ba8";
+  const speedLabel = stats.tokensPerSec >= 20 ? "Fast" : stats.tokensPerSec >= 8 ? "Moderate" : "Slow";
+
+  return (
+    <>
+      <div style={pS.overlay} onClick={onClose} />
+      <div style={{ ...pS.panel, right: "80px", width: "300px" }}>
+        <div style={pS.head}>
+          <h4 style={pS.title}>⚡ Performance Stats</h4>
+          <button style={pS.close} onClick={onClose}>✕</button>
+        </div>
+
+        {/* Hero: tokens/sec */}
+        <div style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          padding: "10px 0 8px",
+          gap: "4px",
+        }}>
+          <span style={{ ...statHighlight, fontSize: "28px", color: speedColor }}>
+            {stats.tokensPerSec}
+          </span>
+          <span style={{ fontSize: "11px", color: speedColor, fontWeight: 500 }}>
+            tokens/sec · {speedLabel}
+          </span>
+          <span style={{ fontSize: "10px", color: "var(--textColorSecondary, #a6adc8)" }}>
+            {stats.model}
+          </span>
+        </div>
+
+        {/* Detail rows */}
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <div style={statRow}>
+            <span style={statLabel}>⏱️ Total time</span>
+            <span style={statValue}>{(stats.totalDurationMs / 1000).toFixed(1)}s</span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>📥 Prompt tokens</span>
+            <span style={statValue}>{stats.promptTokens.toLocaleString()}</span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>📥 Prompt eval</span>
+            <span style={statValue}>
+              {(stats.promptEvalMs / 1000).toFixed(1)}s ({stats.promptTokensPerSec} t/s)
+            </span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>📤 Generated tokens</span>
+            <span style={statValue}>{stats.generatedTokens.toLocaleString()}</span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>📤 Generation time</span>
+            <span style={statValue}>{(stats.generationMs / 1000).toFixed(1)}s</span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>🔄 Model load</span>
+            <span style={statValue}>{stats.loadMs}ms</span>
+          </div>
+        </div>
+
+        {/* Tip */}
+        <div style={{
+          marginTop: "6px",
+          padding: "6px 8px",
+          background: "rgba(137,180,250,.06)",
+          borderRadius: "6px",
+          fontSize: "10px",
+          color: "var(--textColorSecondary, #a6adc8)",
+          lineHeight: 1.4,
+        }}>
+          💡 Compare models by switching in the header dropdown. Lower prompt tokens = better context compression.
+          Higher t/s = faster responses.
+        </div>
+      </div>
+    </>
+  );
+});
