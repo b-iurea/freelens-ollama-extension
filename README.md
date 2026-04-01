@@ -5,6 +5,18 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 ![K8s SRE Assistant](https://img.shields.io/badge/Freelens-Extension-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+## 📸 Screenshots
+
+<!-- TODO: Add screenshots -->
+
+| Screenshot | Description |
+|:----------:|-------------|
+| <!-- ![Chat UI](docs/screenshots/chat-ui.png) --> | **Chat interface** — Ask questions about your cluster, get streaming Markdown responses |
+| <!-- ![Context Bar](docs/screenshots/context-bar.png) --> | **Context bar** — Cluster name, namespace selector, resource counts, health badge |
+| <!-- ![Connection Panel](docs/screenshots/connection-panel.png) --> | **Connection panel** — Configure Ollama endpoint, test connectivity |
+| <!-- ![Model Params](docs/screenshots/model-params.png) --> | **Model parameters** — Tune temperature, top_p, top_k, repeat penalty |
+| <!-- ![Performance Stats](docs/screenshots/perf-stats.png) --> | **Performance stats** — Tokens/sec, prompt eval, generation time |
+
 ## ✨ Features
 
 ### Core
@@ -17,9 +29,10 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 ### Smart Context Management (for small models)
 - **📦 Namespace Selector** — Filter context to a specific namespace in the UI; cluster-scoped resources (nodes) remain visible regardless
 - **🧩 Context Pipeline** — In-process ChunkManager → BM25 Retriever → SummaryManager → ContextBuilder pipeline prevents "lost-in-the-middle" with small (2-4B) models
-- **📊 BM25 Retrieval** — Keyword-based retrieval (pure TypeScript, ~80 lines) scores conversation chunks against the current query to surface the most relevant earlier context
-- **📝 On-Demand Summarisation** — When conversation exceeds 20 turns, old turns are compressed into a summary via a second Ollama call (only when needed, not every turn)
-- **� Token Budget** — Cluster context and conversation history are capped and cleaned (noisy labels stripped, event messages truncated, per-resource limits) to stay within small model context windows
+- **📊 BM25 Retrieval** — K8s-aware keyword retrieval (pure TypeScript) preserves compound terms like `kube-system`, `apps/v1`, pod names, and IPs as searchable tokens. Retrieval runs only on non-summarised messages to avoid duplicating the summary
+- **📝 Non-Blocking Summarisation** — When conversation exceeds 20 exchange pairs, old turns are compressed into a two-section summary (stable **Facts & Decisions** + query-focused **Rolling Context**) via a background Ollama call *after* the response is delivered — zero added latency
+- **🔢 Token Budget** — Cluster context and conversation history are capped and cleaned (noisy labels stripped, event messages truncated, per-resource limits) to stay within small model context windows
+- **🚨 Anomaly-First Sorting** — Pods in CrashLoopBackOff/Error/OOMKilled, deployments with replica mismatch, and NotReady nodes are sorted to the top *before* truncation, so the AI always sees the most actionable resources
 - **🧹 Clean Data** — `managedFields`, long annotations, `pod-template-hash`, and other noisy K8s metadata are stripped before passing to the model
 
 ### UI & Developer Experience
@@ -34,6 +47,7 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 ### Network & Compatibility
 - **🔒 No Mixed-Content Issues** — All Ollama API calls use Node.js `http`/`https` modules instead of browser fetch/XHR, so connecting to plain HTTP Ollama instances from the Electron renderer works reliably
 - **🌐 Remote Ollama** — Full support for remote Ollama instances (set `OLLAMA_ORIGINS=*` and `OLLAMA_HOST=0.0.0.0:11434` on the host)
+- **☁️ Cloud Ollama** — Automatic sanitisation of model parameters (e.g. `num_predict: -1` is stripped) so cloud-hosted Ollama instances don't reject requests
 
 ## 📋 Requirements
 
@@ -202,20 +216,26 @@ src/
 On every user message:
 
 ```
-1. Build system prompt (SRE persona + live K8s cluster data)
-2. SummaryManager.maybeCompress()     → if >20 turns, call Ollama to compress old turns
-3. ChunkManager.buildChunks()         → split full history into ~300-word overlapping chunks
-4. BM25Retriever.retrieve(query, 5)   → top-5 keyword-relevant chunks from history
-5. ContextBuilder.assemble()           → ordered: system + summary + chunks + recent 5 turns + query
-6. OllamaService.streamChatAssembled() → stream response, capture performance stats
+1. Build system prompt (SRE persona + live K8s cluster data, anomalies sorted first)
+2. Use existing summary from previous cycle (non-blocking)
+3. ChunkManager.buildChunks()           → split NON-SUMMARISED history into ~300-word overlapping chunks
+4. BM25Retriever.retrieve(query, 5)     → top-5 keyword-relevant chunks (K8s-aware tokenizer)
+5. ContextBuilder.assemble()             → ordered: system + summary + chunks + recent turns + query
+   └─ Jaccard deduplication removes chunks redundant with recent messages
+6. OllamaService.streamChatAssembled()   → stream response, capture performance stats
+7. (post-response) SummaryManager.maybeCompress()  → background: compress old turns if >20 pairs
+   └─ Two-section output: FACTS & DECISIONS (persistent) + ROLLING CONTEXT (query-focused)
 ```
 
 This prevents the "lost-in-the-middle" problem where small models forget information buried in long contexts.
 
 **Key properties:**
 - Zero npm dependencies for the pipeline — pure TypeScript
-- Ollama called twice only when summarisation is needed (not every turn)
-- BM25 index is rebuilt per-message (fast: pure synchronous string operations)
+- Summarisation runs *after* the response (no added latency)
+- BM25 retrieves only from non-summarised messages (no duplicate context)
+- K8s-aware tokenizer preserves compound terms (`kube-system`, `apps/v1`, IPs)
+- Anomalous resources (CrashLoopBackOff, replica mismatch, NotReady) survive truncation
+- Two-section summary preserves stable facts across rewrites
 - Token budget capped at ~2800 words to fit 4k-context models
 
 ## 🔧 Development

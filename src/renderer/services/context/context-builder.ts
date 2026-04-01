@@ -44,16 +44,31 @@ function wordCount(text: string): number {
 }
 
 /**
- * Deduplicate retrieved chunks against recent turns.
- * If a chunk's text is substantially contained in a recent message, skip it.
+ * Deduplicate retrieved chunks against recent turns using Jaccard similarity.
+ * If a chunk's token set overlaps too heavily with recent messages, skip it.
  */
 function deduplicateChunks(chunks: Chunk[], recentMessages: ChatMessage[]): Chunk[] {
-  const recentText = recentMessages.map((m) => m.content.toLowerCase()).join(" ");
+  // Build a token set from all recent messages
+  const recentTokens = new Set<string>();
+  for (const m of recentMessages) {
+    for (const w of m.content.toLowerCase().split(/\s+/)) {
+      if (w.length > 1) recentTokens.add(w);
+    }
+  }
+  if (recentTokens.size === 0) return chunks;
+
   return chunks.filter((c) => {
-    // If >60% of the chunk's words appear in recent text, it's redundant
-    const cWords = c.text.toLowerCase().split(/\s+/).filter(Boolean);
-    const overlap = cWords.filter((w) => recentText.includes(w)).length;
-    return overlap / cWords.length < 0.6;
+    const cTokens = new Set(c.text.toLowerCase().split(/\s+/).filter((w) => w.length > 1));
+    if (cTokens.size === 0) return false;
+    // Jaccard: |intersection| / |union|
+    let intersection = 0;
+    for (const t of cTokens) {
+      if (recentTokens.has(t)) intersection++;
+    }
+    const union = cTokens.size + recentTokens.size - intersection;
+    const jaccard = union > 0 ? intersection / union : 0;
+    // Threshold: >0.5 Jaccard means the chunk is mostly redundant with recent turns
+    return jaccard < 0.5;
   });
 }
 
