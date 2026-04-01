@@ -9,7 +9,7 @@ import { observer } from "mobx-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage, OllamaModelParams } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS } from "../../common/types";
-import { ChatStore } from "../stores/chat-store";
+import { ChatStore, type SreModeKey } from "../stores/chat-store";
 import { nodeRequestJson } from "../services/ollama-service";
 import { MarkdownRenderer } from "./markdown-renderer";
 
@@ -23,6 +23,33 @@ const SUGGESTED_QUERIES = [
   "Analyze resource usage and suggest optimizations",
   "Check for any security concerns",
 ];
+
+const SRE_MODE_OPTIONS = [
+  { key: "auto", label: "🧭 Auto" },
+  { key: "troubleshoot", label: "🛠 Troubleshoot" },
+  { key: "security", label: "🔐 Security" },
+  { key: "cost", label: "💸 Cost" },
+  { key: "capacity", label: "📈 Capacity" },
+  { key: "yaml", label: "📄 YAML" },
+] as const;
+
+function buildObjectAwarePromptFromUrl(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const kind = params.get("kind");
+    const name = params.get("name");
+    const namespace = params.get("namespace");
+    const reason = params.get("reason");
+    if (!kind || !name) return null;
+    return [
+      `Investigate ${kind}/${name}${namespace ? ` in namespace ${namespace}` : ""}.`,
+      reason ? `Context: ${reason}.` : "",
+      "Provide root cause hypotheses, immediate checks, and safest next actions.",
+    ].filter(Boolean).join(" ");
+  } catch {
+    return null;
+  }
+}
 
 /* ────── inline style objects ────── */
 
@@ -123,6 +150,17 @@ const S = {
     cursor: "pointer",
     maxWidth: "180px",
   },
+  modeSelect: {
+    padding: "3px 8px",
+    border: "1px solid var(--borderColor, #313244)",
+    borderRadius: "6px",
+    background: "var(--mainBackground, #1e1e2e)",
+    color: "#f9e2af",
+    fontSize: "11px",
+    outline: "none" as const,
+    cursor: "pointer",
+    maxWidth: "170px",
+  },
   /* context bar */
   ctx: {
     display: "flex",
@@ -211,6 +249,26 @@ const S = {
     gap: "8px",
     justifyContent: "center",
     marginTop: "6px",
+  },
+  quickActionsWrap: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "6px",
+    marginTop: "8px",
+  },
+  quickActionBtn: {
+    padding: "6px 10px",
+    border: "1px solid rgba(137,180,250,.35)",
+    borderRadius: "14px",
+    background: "rgba(137,180,250,.07)",
+    color: "#89b4fa",
+    fontSize: "11px",
+    cursor: "pointer",
+  },
+  inlineHint: {
+    fontSize: "11px",
+    color: "var(--textColorSecondary, #a6adc8)",
+    marginTop: "4px",
   },
   sugBtn: {
     padding: "7px 14px",
@@ -323,6 +381,19 @@ const S = {
     cursor: "pointer",
     flexShrink: 0,
   },
+  exportToast: {
+    position: "absolute" as const,
+    bottom: "56px",
+    right: "16px",
+    zIndex: 110,
+    background: "rgba(24,24,37,.95)",
+    border: "1px solid var(--borderColor, #313244)",
+    color: "var(--textColorPrimary, #cdd6f4)",
+    padding: "8px 10px",
+    borderRadius: "8px",
+    fontSize: "11px",
+    boxShadow: "0 6px 18px rgba(0,0,0,.35)",
+  },
   loadingDots: {
     display: "flex",
     gap: "4px",
@@ -346,6 +417,7 @@ const KEYFRAMES = `
 
 export const SreChat = observer(() => {
   const [input, setInput] = useState("");
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -361,6 +433,12 @@ export const SreChat = observer(() => {
     chatStore.refreshClusterContext();
     const iv = setInterval(() => chatStore.checkConnection(), 30000);
     return () => clearInterval(iv);
+  }, []);
+
+  // Object-aware entry point: if URL contains kind/name/ns, pre-fill investigation prompt
+  useEffect(() => {
+    const prompt = buildObjectAwarePromptFromUrl();
+    if (prompt) setInput(prompt);
   }, []);
 
   const send = useCallback(async () => {
@@ -388,9 +466,17 @@ export const SreChat = observer(() => {
   const [showParams, setShowParams] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [showSources, setShowSources] = useState(false);
   const connected = chatStore.isOllamaConnected;
   const ctx = chatStore.clusterContext;
   const warnCount = ctx ? ctx.events.filter((ev) => ev.type === "Warning").length : 0;
+  const quickActions = chatStore.getSuggestedActions();
+
+  const handleExport = useCallback(() => {
+    const result = chatStore.exportIncidentSummary();
+    setExportNotice(result.message);
+    window.setTimeout(() => setExportNotice(null), 2400);
+  }, []);
 
   return (
     <div style={S.root}>
@@ -437,6 +523,16 @@ export const SreChat = observer(() => {
               🧠 {chatStore.ollamaModel}
             </span>
           ) : null}
+          <select
+            style={S.modeSelect}
+            value={chatStore.selectedSreMode}
+            onChange={(e) => chatStore.setSelectedSreMode(e.target.value as SreModeKey)}
+            title="SRE mode"
+          >
+            {SRE_MODE_OPTIONS.map((m) => (
+              <option key={m.key} value={m.key}>{m.label}</option>
+            ))}
+          </select>
           {connected && (
             <button
               style={{ ...S.btn, fontSize: "13px", padding: "3px 8px" }}
@@ -464,6 +560,12 @@ export const SreChat = observer(() => {
           <button style={S.btn} onClick={() => chatStore.refreshClusterContext()} disabled={chatStore.isGatheringContext}>
             🔄 {chatStore.isGatheringContext ? "Scanning…" : "Refresh"}
           </button>
+          <button style={S.btn} onClick={() => setShowSources((p) => !p)}>
+            🧰 Sources
+          </button>
+          {chatStore.hasMessages && (
+            <button style={S.btn} onClick={handleExport}>📄 Export</button>
+          )}
           {chatStore.hasMessages && (
             <button style={S.btn} onClick={() => chatStore.clearMessages()}>🗑️ Clear</button>
           )}
@@ -478,6 +580,9 @@ export const SreChat = observer(() => {
 
       {/* ── Performance stats panel ── */}
       {showStats && <StatsPanel onClose={() => setShowStats(false)} />}
+
+      {/* ── Data source visibility panel ── */}
+      {showSources && <SourcesPanel onClose={() => setShowSources(false)} />}
 
       {/* ── Context bar ── */}
       {(ctx || chatStore.isGatheringContext) && (
@@ -583,6 +688,22 @@ export const SreChat = observer(() => {
 
       {/* ── Input bar ── */}
       <div style={S.inputBar}>
+        {chatStore.hasMessages && (
+          <div style={{ padding: "6px 16px 0" }}>
+            <div style={S.inlineHint}>Suggested next actions</div>
+            <div style={S.quickActionsWrap}>
+              {quickActions.map((a) => (
+                <button
+                  key={a}
+                  style={S.quickActionBtn}
+                  onClick={() => { setInput(a); taRef.current?.focus(); }}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div style={S.inputArea}>
           <div style={S.inputWrap}>
             <textarea
@@ -612,6 +733,8 @@ export const SreChat = observer(() => {
           )}
         </div>
       </div>
+
+      {exportNotice && <div style={S.exportToast}>{exportNotice}</div>}
     </div>
   );
 });
@@ -1044,6 +1167,55 @@ const StatsPanel = observer(({ onClose }: { onClose: () => void }) => {
         }}>
           💡 Compare models by switching in the header dropdown. Lower prompt tokens = better context compression.
           Higher t/s = faster responses.
+        </div>
+      </div>
+    </>
+  );
+});
+
+/* ── Data Sources panel ── */
+const SourcesPanel = observer(({ onClose }: { onClose: () => void }) => {
+  const sources = chatStore.getDataSourceStatus();
+
+  const colorFor = (status: "ready" | "partial" | "missing") => {
+    if (status === "ready") return "#a6e3a1";
+    if (status === "partial") return "#f9e2af";
+    return "#f38ba8";
+  };
+
+  return (
+    <>
+      <div style={pS.overlay} onClick={onClose} />
+      <div style={{ ...pS.panel, right: "12px", width: "320px" }}>
+        <div style={pS.head}>
+          <h4 style={pS.title}>🧰 SRE Data Sources</h4>
+          <button style={pS.close} onClick={onClose}>✕</button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          {sources.map((s) => (
+            <div
+              key={s.name}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                border: "1px solid rgba(49,50,68,.5)",
+                borderRadius: "6px",
+                padding: "7px 9px",
+                fontSize: "11px",
+                gap: "8px",
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                <span style={{ color: "var(--textColorPrimary, #cdd6f4)", fontWeight: 600 }}>{s.name}</span>
+                <span style={{ color: "var(--textColorSecondary, #a6adc8)" }}>{s.detail}</span>
+              </div>
+              <span style={{ color: colorFor(s.status), fontWeight: 700, textTransform: "uppercase", fontSize: "10px" }}>
+                {s.status}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
     </>

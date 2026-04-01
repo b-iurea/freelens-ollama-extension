@@ -25,7 +25,21 @@ interface PersistedSettings {
   autoRefreshContext: boolean;
   modelParams?: OllamaModelParams;
   selectedNamespace?: string;
+  selectedSreMode?: SreModeKey;
 }
+
+export type SreModeKey = "auto" | "troubleshoot" | "security" | "cost" | "capacity" | "yaml";
+
+const SESSION_KEY_PREFIX = "k8s-sre-assistant-session";
+
+const SRE_MODE_INSTRUCTIONS: Record<SreModeKey, string> = {
+  auto: "Auto mode: infer the best SRE workflow for the user request.",
+  troubleshoot: "Troubleshoot mode: prioritize root cause analysis, evidence, and verification steps.",
+  security: "Security review mode: prioritize RBAC, PodSecurity, NetworkPolicy, image and secret risks.",
+  cost: "Cost check mode: prioritize waste reduction, right-sizing, autoscaling and noisy workloads.",
+  capacity: "Capacity planning mode: prioritize saturation signals, scheduling pressure and scaling strategy.",
+  yaml: "YAML helper mode: prioritize precise Kubernetes manifests, patches and safe apply guidance.",
+};
 
 export class ChatStore {
   messages: ChatMessage[] = [];
@@ -40,12 +54,14 @@ export class ChatStore {
   autoRefreshContext = true;
   modelParams: OllamaModelParams = { ...DEFAULT_MODEL_PARAMS };
   selectedNamespace = "__all__";
+  selectedSreMode: SreModeKey = "auto";
   availableNamespaces: string[] = [];
   lastPerformanceStats: OllamaPerformanceStats | null = null;
 
   private ollamaService: OllamaService;
   private chunkManager: ChunkManager;
   private summaryManager: SummaryManager;
+  private currentSessionKey = "";
   private static instance: ChatStore | null = null;
 
   static getInstance(): ChatStore {
@@ -69,6 +85,7 @@ export class ChatStore {
       autoRefreshContext: observable,
       modelParams: observable,
       selectedNamespace: observable,
+      selectedSreMode: observable,
       availableNamespaces: observable,
       lastPerformanceStats: observable,
       hasMessages: computed,
@@ -78,6 +95,7 @@ export class ChatStore {
       setAutoRefreshContext: action,
       setModelParams: action,
       setSelectedNamespace: action,
+      setSelectedSreMode: action,
       syncSettings: action,
       clearMessages: action,
       setError: action,
@@ -92,6 +110,8 @@ export class ChatStore {
     this.summaryManager = new SummaryManager();
     // Wire SummaryManager to call Ollama for compression
     this.summaryManager.setGenerateFn((prompt) => this.ollamaService.generateText(prompt));
+    this.currentSessionKey = this.buildSessionKey("unknown-cluster", this.selectedNamespace);
+    this.loadSessionMessages(this.currentSessionKey);
 
     // Sync settings across contexts (preferences ↔ cluster page)
     try {
@@ -111,6 +131,7 @@ export class ChatStore {
         if (typeof s.autoRefreshContext === "boolean") this.autoRefreshContext = s.autoRefreshContext;
         if (s.modelParams) this.modelParams = { ...DEFAULT_MODEL_PARAMS, ...s.modelParams };
         if (s.selectedNamespace) this.selectedNamespace = s.selectedNamespace;
+        if (s.selectedSreMode) this.selectedSreMode = s.selectedSreMode;
       }
     } catch {
       // first run or corrupt data — use defaults
@@ -125,6 +146,7 @@ export class ChatStore {
         autoRefreshContext: this.autoRefreshContext,
         modelParams: this.modelParams,
         selectedNamespace: this.selectedNamespace,
+        selectedSreMode: this.selectedSreMode,
       };
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
     } catch {
@@ -155,9 +177,53 @@ export class ChatStore {
       if (s.modelParams) {
         this.modelParams = { ...DEFAULT_MODEL_PARAMS, ...s.modelParams };
       }
+      if (s.selectedSreMode) {
+        this.selectedSreMode = s.selectedSreMode;
+      }
     } catch {
       // ignore parse errors
     }
+  }
+
+  private buildSessionKey(clusterName: string, namespace: string): string {
+    const c = (clusterName || "unknown-cluster").replace(/\s+/g, "_").toLowerCase();
+    const ns = (namespace || "__all__").replace(/\s+/g, "_").toLowerCase();
+    return `${SESSION_KEY_PREFIX}:${c}:${ns}`;
+  }
+
+  private loadSessionMessages(sessionKey: string) {
+    try {
+      const raw = localStorage.getItem(sessionKey);
+      if (!raw) {
+        this.messages = [];
+        this.summaryManager.reset();
+        return;
+      }
+      const parsed: ChatMessage[] = JSON.parse(raw);
+      this.messages = Array.isArray(parsed)
+        ? parsed.map((m) => ({ ...m, isStreaming: false }))
+        : [];
+      this.summaryManager.reset();
+    } catch {
+      this.messages = [];
+      this.summaryManager.reset();
+    }
+  }
+
+  private persistSessionMessages() {
+    if (!this.currentSessionKey) return;
+    try {
+      localStorage.setItem(this.currentSessionKey, JSON.stringify(this.messages));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  private switchSessionScope(clusterName?: string, namespace?: string) {
+    const key = this.buildSessionKey(clusterName || "unknown-cluster", namespace || "__all__");
+    if (key === this.currentSessionKey) return;
+    this.currentSessionKey = key;
+    this.loadSessionMessages(key);
   }
 
   private onStorageChange = (e: StorageEvent) => {
@@ -192,12 +258,18 @@ export class ChatStore {
     this.saveSettings();
   }
 
+  setSelectedSreMode(mode: SreModeKey) {
+    this.selectedSreMode = mode;
+    this.saveSettings();
+  }
+
   setModelParams(params: Partial<OllamaModelParams>) {
     this.modelParams = { ...this.modelParams, ...params };
     this.saveSettings();
   }
 
   async setSelectedNamespace(ns: string) {
+    this.persistSessionMessages();
     this.selectedNamespace = ns;
     this.saveSettings();
     // Immediately clear stale context so the UI doesn't show old data
@@ -212,6 +284,7 @@ export class ChatStore {
     this.messages = [];
     this.error = null;
     this.summaryManager.reset();
+    this.persistSessionMessages();
   }
 
   setError(error: string | null) {
@@ -253,6 +326,7 @@ export class ChatStore {
         if (ctx.namespaces.length > 0) {
           this.availableNamespaces = ctx.namespaces;
         }
+        this.switchSessionScope(ctx.clusterName, this.selectedNamespace);
       });
       console.log(
         "[K8s SRE] Cluster context refreshed →",
@@ -285,6 +359,7 @@ export class ChatStore {
       timestamp: Date.now(),
     };
     runInAction(() => { this.messages.push(userMessage); });
+    this.persistSessionMessages();
 
     // Auto-refresh context before each message if enabled
     if (this.autoRefreshContext) {
@@ -309,9 +384,11 @@ export class ChatStore {
       /* ── Context pipeline ── */
 
       // 1. Build system prompt (SRE persona + live K8s data)
-      const systemPrompt = this.ollamaService.buildSystemPrompt(
+      const baseSystemPrompt = this.ollamaService.buildSystemPrompt(
         this.clusterContext || undefined,
       );
+      const modeInstruction = SRE_MODE_INSTRUCTIONS[this.selectedSreMode];
+      const systemPrompt = `${baseSystemPrompt}\n\n--- ACTIVE SRE MODE ---\n${modeInstruction}`;
 
       // 2. Use existing summary (computed after previous response, not blocking)
       const summary = this.summaryManager.getSummary();
@@ -367,6 +444,7 @@ export class ChatStore {
           this.lastPerformanceStats = { ...this.ollamaService.lastStats };
         }
       });
+      this.persistSessionMessages();
 
       // 6. Post-response: compress old turns in background if threshold reached.
       //    Runs AFTER the response is delivered so it doesn't add latency.
@@ -389,6 +467,7 @@ export class ChatStore {
           };
         }
       });
+      this.persistSessionMessages();
     } finally {
       runInAction(() => { this.isLoading = false; });
     }
@@ -397,6 +476,122 @@ export class ChatStore {
   cancelStream() {
     this.ollamaService.cancelStream();
     this.isLoading = false;
+  }
+
+  getSuggestedActions(): string[] {
+    const actions = new Set<string>();
+    const ctx = this.clusterContext;
+    const lastUser = [...this.messages].reverse().find((m) => m.role === "user")?.content.toLowerCase() || "";
+
+    if (ctx) {
+      const warnings = ctx.events.filter((e) => e.type === "Warning").length;
+      if (warnings > 0) actions.add("Show top warning events and likely root causes");
+      if (ctx.pods.some((p) => (p.status || "").toLowerCase().includes("crashloop"))) {
+        actions.add("Investigate CrashLoopBackOff pods with prioritized fixes");
+      }
+      if (ctx.deployments.some((d) => {
+        const [ready, desired] = (d.replicas || "0/0").split("/").map((n) => Number(n));
+        return Number.isFinite(ready) && Number.isFinite(desired) && desired > ready;
+      })) {
+        actions.add("List deployments with replica mismatch and rollout checks");
+      }
+    }
+
+    if (this.selectedSreMode === "security" || lastUser.includes("security") || lastUser.includes("rbac")) {
+      actions.add("Run a quick RBAC and pod security posture review");
+    }
+    if (this.selectedSreMode === "cost" || lastUser.includes("cost") || lastUser.includes("resource")) {
+      actions.add("Suggest cost optimizations for over-provisioned workloads");
+    }
+    if (this.selectedSreMode === "yaml" || lastUser.includes("yaml") || lastUser.includes("manifest")) {
+      actions.add("Draft a safe YAML patch with explanation and dry-run command");
+    }
+
+    if (actions.size === 0) {
+      actions.add("Summarize cluster health and top risks right now");
+      actions.add("Recommend the next 3 troubleshooting steps");
+    }
+
+    return Array.from(actions).slice(0, 5);
+  }
+
+  getDataSourceStatus(): Array<{ name: string; status: "ready" | "partial" | "missing"; detail: string }> {
+    const c = this.clusterContext;
+    if (!c) {
+      return [
+        { name: "Cluster Context", status: "missing", detail: "No context loaded yet" },
+        { name: "Conversation Memory", status: this.messages.length > 0 ? "partial" : "missing", detail: `${this.messages.length} messages` },
+      ];
+    }
+
+    return [
+      { name: "Pods", status: c.pods.length > 0 ? "ready" : "missing", detail: `${c.pods.length} loaded` },
+      { name: "Deployments", status: c.deployments.length > 0 ? "ready" : "missing", detail: `${c.deployments.length} loaded` },
+      { name: "Services", status: c.services.length > 0 ? "ready" : "missing", detail: `${c.services.length} loaded` },
+      { name: "Nodes", status: c.nodes.length > 0 ? "ready" : "missing", detail: `${c.nodes.length} loaded` },
+      { name: "Events", status: c.events.length > 0 ? "ready" : "missing", detail: `${c.events.length} loaded` },
+      { name: "Conversation Memory", status: this.messages.length > 0 ? "ready" : "partial", detail: `${this.messages.length} messages` },
+    ];
+  }
+
+  buildIncidentSummaryMarkdown(): string {
+    const ctx = this.clusterContext;
+    const now = new Date().toISOString();
+    const warnings = ctx ? ctx.events.filter((e) => e.type === "Warning") : [];
+    const assistantMessages = this.messages.filter((m) => m.role === "assistant" && m.content.trim());
+    const lastAssistant = assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1].content : "No assistant response yet.";
+
+    return [
+      "# Incident Summary",
+      "",
+      `- Generated: ${now}`,
+      `- Cluster: ${ctx?.clusterName || "unknown"}`,
+      `- Namespace scope: ${this.selectedNamespace === "__all__" ? "all" : this.selectedNamespace}`,
+      `- Active mode: ${this.selectedSreMode}`,
+      "",
+      "## Context Snapshot",
+      "",
+      `- Pods: ${ctx?.pods.length ?? 0}`,
+      `- Deployments: ${ctx?.deployments.length ?? 0}`,
+      `- Services: ${ctx?.services.length ?? 0}`,
+      `- Nodes: ${ctx?.nodes.length ?? 0}`,
+      `- Warning events: ${warnings.length}`,
+      "",
+      "## Top Warning Events",
+      "",
+      ...(warnings.length > 0
+        ? warnings.slice(0, 10).map((w) => `- [${w.reason}] ${w.involvedObject}: ${w.message}`)
+        : ["- None detected"]),
+      "",
+      "## Assistant Latest Analysis",
+      "",
+      lastAssistant,
+      "",
+      "## Conversation Transcript",
+      "",
+      ...this.messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => `### ${m.role.toUpperCase()}\n\n${m.content}\n`),
+    ].join("\n");
+  }
+
+  exportIncidentSummary(): { ok: boolean; message: string } {
+    try {
+      const md = this.buildIncidentSummaryMarkdown();
+      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const cluster = (this.clusterContext?.clusterName || "cluster").replace(/\s+/g, "-").toLowerCase();
+      const ns = (this.selectedNamespace || "all").replace(/\s+/g, "-").toLowerCase();
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `incident-summary-${cluster}-${ns}-${ts}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return { ok: true, message: "Incident summary exported" };
+    } catch (e: any) {
+      return { ok: false, message: `Export failed: ${e?.message || "unknown error"}` };
+    }
   }
 }
 

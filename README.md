@@ -238,6 +238,41 @@ This prevents the "lost-in-the-middle" problem where small models forget informa
 - Two-section summary preserves stable facts across rewrites
 - Token budget capped at ~2800 words to fit 4k-context models
 
+## 🗺️ Roadmap
+
+Inspired by ideas visible in the local [freelens-ai-extension](freelens-ai-extension/README.md) repo, but adapted to this extension's SRE-first identity.
+
+### Near-term improvements
+
+- **Preset SRE modes** — Add opinionated chat modes such as **Troubleshoot**, **Security Review**, **Cost Check**, **Capacity Planning**, and **YAML Helper** instead of a generic AI mode switch
+- **Suggested actions, not just answers** — Turn responses into clickable follow-ups like “inspect events”, “compare replicas”, “focus this namespace”, or “draft a NetworkPolicy”
+- **Object-aware entry points** — Open the assistant from a pod, deployment, node, or event and prefill the chat with that resource as the active investigation target
+- **Tool visibility panel** — Show which cluster capabilities/context sources are available for the current message, similar to the “available tools” concept, but framed as **SRE data sources**
+- **Session persistence** — Persist conversations per cluster and namespace, so investigations survive app restarts and can be resumed later
+- **Export incident summary** — Export a conversation into a compact markdown incident note with facts, findings, commands, and next steps
+
+### SRE-native agent workflow
+
+- **Specialized internal agents** — Introduce lightweight internal roles such as **Investigator**, **Explainer**, **YAML Author**, and **Change Planner**, while keeping the UI simple and single-threaded
+- **Read-first, write-later workflow** — Separate analysis from mutation: first explain what is wrong, then generate the exact patch or manifest, and only later support controlled apply actions
+- **Runbook generation** — Convert successful troubleshooting sessions into reusable runbooks/checklists for future incidents
+- **Event and log correlation** — Expand from raw cluster objects to correlated views: warnings, restart spikes, rollout failures, probe failures, and timeline summaries
+
+### Integrations and power features
+
+- **MCP support for SRE workflows** — Borrow the MCP idea, but use it for clearly scoped integrations like GitHub issues, runbook repositories, incident systems, or external observability tools
+- **Prompt packs / response templates** — Add reusable output templates for postmortems, incident updates, security findings, migration plans, and RFC-style recommendations
+- **Model/provider profiles** — Offer ready-made profiles such as **Fast local triage**, **Balanced local**, and **Cloud deep analysis** instead of exposing only raw model parameters
+- **Cluster diff awareness** — Compare “before vs after” snapshots across refreshes to explain what changed during an investigation
+- **Safe action queue** — Queue generated kubectl commands or manifests for review before execution, with explicit risk labels and dry-run defaults
+
+### Longer-term product direction
+
+- **Namespace and workload memory** — Build compact per-namespace or per-workload memory so the assistant remembers recurring issues without bloating each prompt
+- **Incident timeline UI** — Visual timeline of warnings, restarts, rollout events, and assistant conclusions during a troubleshooting session
+- **Policy and config review** — Deep analysis for RBAC, NetworkPolicies, PodSecurity, probes, resources, and disruption budgets with explainable reasoning
+- **SRE cockpit experience** — Evolve from a chat tab into a guided operational workspace inside Freelens: investigate, explain, propose, review, export
+
 ## 🔧 Development
 
 ```bash
