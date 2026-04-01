@@ -7,29 +7,39 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 
 ## ✨ Features
 
+### Core
 - **🧠 AI Chat Interface** — Conversational AI assistant integrated directly into Freelens
-- **👁️ Cluster Awareness** — The AI sees your pods, deployments, services, nodes, and events in real-time
-- **🔄 Live Context Refresh** — Automatically gathers cluster state before each conversation
-- **📡 Ollama Integration** — Uses local Ollama for privacy-first AI (no data leaves your machine)
+- **👁️ Cluster Awareness** — The AI sees your pods, deployments, services, nodes, and events in real-time via direct K8s API calls (`KubeApi.list()`)
+- **📡 Ollama Integration** — Uses local or remote Ollama for privacy-first AI (no data leaves your network)
 - **💬 Streaming Responses** — Real-time streaming with a block-level Markdown renderer safe for incomplete output
-- **🎨 Beautiful UI** — Modern chat bubbles with Markdown rendering, syntax-highlighted code blocks, and tables
-- **⚡ Suggested Queries** — Quick-start prompts for common SRE tasks
 - **🛑 Cancelable** — Stop AI generation at any time
-- **🧠 In-Chat Model Selector** — Switch Ollama models directly from the chat header without leaving the conversation
-- **📡 Context Bar** — Shows the active cluster name and health status (warning count or ✓ Healthy)
+
+### Smart Context Management (for small models)
+- **📦 Namespace Selector** — Filter context to a specific namespace in the UI; cluster-scoped resources (nodes) remain visible regardless
+- **🧩 Context Pipeline** — In-process ChunkManager → BM25 Retriever → SummaryManager → ContextBuilder pipeline prevents "lost-in-the-middle" with small (2-4B) models
+- **📊 BM25 Retrieval** — Keyword-based retrieval (pure TypeScript, ~80 lines) scores conversation chunks against the current query to surface the most relevant earlier context
+- **📝 On-Demand Summarisation** — When conversation exceeds 20 turns, old turns are compressed into a summary via a second Ollama call (only when needed, not every turn)
+- **� Token Budget** — Cluster context and conversation history are capped and cleaned (noisy labels stripped, event messages truncated, per-resource limits) to stay within small model context windows
+- **🧹 Clean Data** — `managedFields`, long annotations, `pod-template-hash`, and other noisy K8s metadata are stripped before passing to the model
+
+### UI & Developer Experience
+- **🧠 In-Chat Model Selector** — Switch Ollama models directly from the chat header
+- **⚡ Performance Stats** — After each response, see tokens/sec, prompt tokens, generation time, and model load time in a stats panel — compare models instantly
+- **📡 Context Bar** — Shows cluster name, selected namespace, pod/deployment counts, and warning count
+- **⚙️ In-Chat Model Parameters** — Tune temperature, top_p, top_k, repeat penalty, and max tokens
+- **🔌 In-Chat Connection Panel** — Configure endpoint, test connection via Node.js HTTP (no mixed-content issues)
+- **💾 Persistent Settings** — All settings saved to `localStorage` and synced across Freelens contexts
 - **⬅️ Back Navigation** — One-click return to the cluster dashboard
-- **🖥️ Freelens-Native Layout** — Coexists with the Freelens sidebar (Workloads, Network, Storage…) and native bottom bar (Terminal, Create Resource)
-- **🔌 In-Chat Connection Panel** — Click the Ollama badge to configure endpoint, test the connection, and see a full debug log — all without leaving the chat
-- **⚙️ In-Chat Model Parameters** — Tune temperature, top_p, top_k, repeat penalty, and max tokens from a popover panel in the chat header
-- **📦 Model Browser** — Discover and select from all models available on your Ollama instance (with size info)
-- **💾 Persistent Settings** — Endpoint, model, parameters, and options are saved to `localStorage` and synced across Freelens contexts
-- **🛠️ Minimal Preferences** — Endpoint and auto-refresh are also available in Freelens Preferences for initial setup
+
+### Network & Compatibility
+- **🔒 No Mixed-Content Issues** — All Ollama API calls use Node.js `http`/`https` modules instead of browser fetch/XHR, so connecting to plain HTTP Ollama instances from the Electron renderer works reliably
+- **🌐 Remote Ollama** — Full support for remote Ollama instances (set `OLLAMA_ORIGINS=*` and `OLLAMA_HOST=0.0.0.0:11434` on the host)
 
 ## 📋 Requirements
 
-- **FreelensAPIExtension** >= 1.4.0
-- **Ollama** running locally (or accessible via network)
-- At least one Ollama model pulled (e.g., `llama3.2`, `mistral`, `codellama`)
+- **Freelens** >= 1.4.0
+- **Ollama** running locally or on the network
+- At least one Ollama model pulled (e.g., `llama3.2`, `qwen3`, `mistral`)
 
 ## 🚀 Quick Start
 
@@ -46,16 +56,15 @@ ollama serve
 ### 2. Pull a Model
 
 ```bash
-# Recommended models for SRE tasks
-ollama pull llama3.2        # General purpose, good balance
-ollama pull mistral          # Fast and capable
-ollama pull codellama        # Great for YAML/config analysis
-ollama pull deepseek-coder   # Excellent for debugging
+# Recommended for SRE tasks
+ollama pull llama3.2        # General purpose, good balance (3B)
+ollama pull qwen3            # Fast, great for structured data (4B)
+ollama pull mistral          # Capable all-rounder (7B)
+ollama pull deepseek-coder   # Excellent for YAML/config (6.7B)
 ```
 
 ### 3. Install the Extension
 
-#### From source:
 ```bash
 git clone https://github.com/biurea/freelens-k8s-sre-assistant.git
 cd freelens-k8s-sre-assistant
@@ -72,6 +81,7 @@ Then in Freelens: **Extensions** → **Add Local Extension** → select the `.tg
 - "What's the health status of my cluster?"
 - "Are there any pods in CrashLoopBackOff?"
 - "Show me recent warning events"
+- "List all namespaces"
 
 ### Troubleshooting
 - "Why is my deployment not rolling out?"
@@ -97,26 +107,46 @@ Then in Freelens: **Extensions** → **Add Local Extension** → select the `.tg
 
 ### Chat Header Controls
 
-All primary configuration lives directly in the chat UI — no need to leave the conversation.
+All primary configuration lives directly in the chat UI.
 
 #### 🔌 Connection Panel (Ollama badge)
 
-Click the **Ollama** / **Disconnected** badge in the header to open the connection overlay:
+Click the **Ollama** / **Disconnected** badge to open the connection overlay:
 
-- **Endpoint input** — set the Ollama URL (e.g. `http://localhost:11434`).
-- **Test Connection** — one-click test with automatic `fetch` → `XHR` fallback.
-- **Debug log** — detailed diagnostics with troubleshooting hints on failure.
-- **Status indicator** — ✓ Connected (with model count) / ✕ Connection failed.
+- **Endpoint input** — set the Ollama URL (e.g. `http://localhost:11434`)
+- **Test Connection** — one-click test using Node.js HTTP (bypasses mixed-content)
+- **Debug log** — detailed diagnostics with troubleshooting hints
 
-> **Tip for remote Ollama:** set `OLLAMA_ORIGINS=*` and `OLLAMA_HOST=0.0.0.0:11434` on the Ollama host.
+#### 📦 Namespace Selector (context bar)
+
+The dropdown in the context bar lets you scope the AI's view to a single namespace:
+
+- **All Namespaces** — model sees pods/deployments/services/events from all namespaces (with limits)
+- **Specific namespace** — only namespaced resources from that namespace are included; nodes and the namespace list remain global
+
+Changing namespace triggers an automatic context refresh.
+
+#### ⚡ Performance Stats (⚡ t/s button)
+
+After each response, a green button shows generation speed. Click to see:
+
+| Metric | Description |
+|--------|-------------|
+| Tokens/sec | Generation speed (🟢 ≥20, 🟡 ≥8, 🔴 <8) |
+| Total time | End-to-end response time |
+| Prompt tokens | Tokens in the full context sent to the model |
+| Prompt eval | Time to process the prompt |
+| Generated tokens | Tokens in the AI's response |
+| Generation time | Time spent generating |
+| Model load | Time to load the model into memory |
+
+Use this to compare models and find the best speed/quality tradeoff.
 
 #### 🧠 Model Selector
 
-The header dropdown lists all available Ollama models. Switching model takes effect immediately.
+The header dropdown lists all available Ollama models. Switching takes effect immediately.
 
 #### ⚙️ Model Parameters (⚙️ button)
-
-Click the **⚙️** button to open the parameters popover:
 
 | Parameter | Range | Description |
 |-----------|-------|-------------|
@@ -126,52 +156,67 @@ Click the **⚙️** button to open the parameters popover:
 | Repeat Penalty | 1 – 2 | Penalize repeated tokens |
 | Max Tokens | -1 – 8192 | Response length (-1 = unlimited) |
 
-All parameters are saved to `localStorage` and applied to every request.
-
-### Preferences Panel (minimal)
+### Preferences Panel
 
 Open **Freelens → Preferences → K8s SRE Assistant** for basic setup:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Ollama Endpoint | `http://localhost:11434` | URL of your Ollama instance. |
-| Auto-refresh context | `true` | Gather cluster state before each message. |
-
-Model selection, parameters, and connection testing are all in the chat header.
-
-### Freelens Integration
-
-The extension is designed to **coexist with native Freelens features**:
-
-- The **sidebar** (Workloads, Network, Storage, Helm, etc.) stays visible alongside the chat.
-- The **native bottom bar** (Terminal, Create Resource) remains accessible below the chat input.
-- Click **← Back** in the chat header to return to the cluster dashboard.
+| Ollama Endpoint | `http://localhost:11434` | URL of your Ollama instance |
+| Auto-refresh context | `true` | Gather cluster state before each message |
 
 ## 🏗️ Architecture
 
 ```
 src/
 ├── main/
-│   └── index.ts                    # Main process entry (Freelens lifecycle)
+│   └── index.ts                          # Main process entry (Freelens lifecycle)
 ├── renderer/
-│   ├── index.tsx                   # Renderer entry (registers pages, menus & preferences)
+│   ├── index.tsx                         # Renderer entry (registers pages, menus, preferences)
 │   ├── components/
-│   │   ├── sre-chat.tsx            # Main chat UI + ConnectionPanel + ModelParamsPanel overlays
-│   │   └── markdown-renderer.tsx   # Streaming-safe block-level Markdown → HTML renderer
+│   │   ├── sre-chat.tsx                  # Chat UI + ConnectionPanel + ModelParamsPanel + StatsPanel
+│   │   └── markdown-renderer.tsx         # Streaming-safe block-level Markdown → HTML renderer
 │   ├── icons/
-│   │   └── sre-icon.tsx            # Sidebar icon
+│   │   └── sre-icon.tsx                  # Sidebar icon
 │   ├── pages/
-│   │   └── sre-assistant-page.tsx  # Freelens cluster page wrapper (sidebar-friendly layout)
+│   │   └── sre-assistant-page.tsx        # Freelens cluster page wrapper
 │   ├── preferences/
-│   │   └── sre-preferences.tsx     # Minimal Freelens Preferences (endpoint + auto-refresh)
+│   │   └── sre-preferences.tsx           # Freelens Preferences panel
 │   ├── services/
-│   │   ├── ollama-service.ts       # Ollama API client (streaming, fetch + XHR fallback)
-│   │   └── k8s-context-service.ts  # Kubernetes context gatherer
+│   │   ├── ollama-service.ts             # Ollama API (Node.js HTTP, streaming, stats capture)
+│   │   ├── k8s-context-service.ts        # K8s context via KubeApi.list() + namespace filtering
+│   │   └── context/                      # 🧩 Context management pipeline
+│   │       ├── index.ts                  #    Barrel export
+│   │       ├── chunk-manager.ts          #    Sliding-window chunker (~300 words, 50 overlap)
+│   │       ├── bm25-retriever.ts         #    Pure-TS BM25 (k1=1.5, b=0.75) keyword retrieval
+│   │       ├── summary-manager.ts        #    On-demand Ollama-based conversation compression
+│   │       └── context-builder.ts        #    Assembles: system → summary → BM25 chunks → recent → query
 │   └── stores/
-│       └── chat-store.ts           # MobX state management (cross-context settings sync)
+│       └── chat-store.ts                 # MobX state + context pipeline orchestration
 └── common/
-    └── types.ts                    # Shared TypeScript types
+    └── types.ts                          # Shared TypeScript types
 ```
+
+### Context Pipeline Flow
+
+On every user message:
+
+```
+1. Build system prompt (SRE persona + live K8s cluster data)
+2. SummaryManager.maybeCompress()     → if >20 turns, call Ollama to compress old turns
+3. ChunkManager.buildChunks()         → split full history into ~300-word overlapping chunks
+4. BM25Retriever.retrieve(query, 5)   → top-5 keyword-relevant chunks from history
+5. ContextBuilder.assemble()           → ordered: system + summary + chunks + recent 5 turns + query
+6. OllamaService.streamChatAssembled() → stream response, capture performance stats
+```
+
+This prevents the "lost-in-the-middle" problem where small models forget information buried in long contexts.
+
+**Key properties:**
+- Zero npm dependencies for the pipeline — pure TypeScript
+- Ollama called twice only when summarisation is needed (not every turn)
+- BM25 index is rebuilt per-message (fast: pure synchronous string operations)
+- Token budget capped at ~2800 words to fit 4k-context models
 
 ## 🔧 Development
 
@@ -182,14 +227,11 @@ pnpm install
 # Type check
 pnpm type:check
 
-# Build (development - preserved modules for debugging)
+# Build
 pnpm build
 
-# Build (production - single bundle)
-pnpm build:production
-
 # Pack for local testing
-pnpm pack:dev
+pnpm pack
 ```
 
 ## 📄 License

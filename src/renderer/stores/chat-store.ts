@@ -6,10 +6,16 @@
  */
 
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
-import type { ChatMessage, ClusterContext, OllamaModelInfo, OllamaModelParams } from "../../common/types";
+import type { ChatMessage, ClusterContext, OllamaModelInfo, OllamaModelParams, OllamaPerformanceStats } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { K8sContextService } from "../services/k8s-context-service";
 import { OllamaService } from "../services/ollama-service";
+import {
+  ChunkManager,
+  BM25Retriever,
+  SummaryManager,
+  ContextBuilder,
+} from "../services/context";
 
 const SETTINGS_KEY = "k8s-sre-assistant-settings";
 
@@ -18,6 +24,7 @@ interface PersistedSettings {
   ollamaModel: string;
   autoRefreshContext: boolean;
   modelParams?: OllamaModelParams;
+  selectedNamespace?: string;
 }
 
 export class ChatStore {
@@ -32,8 +39,13 @@ export class ChatStore {
   isGatheringContext = false;
   autoRefreshContext = true;
   modelParams: OllamaModelParams = { ...DEFAULT_MODEL_PARAMS };
+  selectedNamespace = "__all__";
+  availableNamespaces: string[] = [];
+  lastPerformanceStats: OllamaPerformanceStats | null = null;
 
   private ollamaService: OllamaService;
+  private chunkManager: ChunkManager;
+  private summaryManager: SummaryManager;
   private static instance: ChatStore | null = null;
 
   static getInstance(): ChatStore {
@@ -56,12 +68,16 @@ export class ChatStore {
       isGatheringContext: observable,
       autoRefreshContext: observable,
       modelParams: observable,
+      selectedNamespace: observable,
+      availableNamespaces: observable,
+      lastPerformanceStats: observable,
       hasMessages: computed,
       lastMessage: computed,
       setEndpoint: action,
       setModel: action,
       setAutoRefreshContext: action,
       setModelParams: action,
+      setSelectedNamespace: action,
       syncSettings: action,
       clearMessages: action,
       setError: action,
@@ -72,6 +88,10 @@ export class ChatStore {
 
     this.loadSettings();
     this.ollamaService = new OllamaService(this.ollamaEndpoint, this.ollamaModel);
+    this.chunkManager = new ChunkManager();
+    this.summaryManager = new SummaryManager();
+    // Wire SummaryManager to call Ollama for compression
+    this.summaryManager.setGenerateFn((prompt) => this.ollamaService.generateText(prompt));
 
     // Sync settings across contexts (preferences ↔ cluster page)
     try {
@@ -90,6 +110,7 @@ export class ChatStore {
         if (s.ollamaModel) this.ollamaModel = s.ollamaModel;
         if (typeof s.autoRefreshContext === "boolean") this.autoRefreshContext = s.autoRefreshContext;
         if (s.modelParams) this.modelParams = { ...DEFAULT_MODEL_PARAMS, ...s.modelParams };
+        if (s.selectedNamespace) this.selectedNamespace = s.selectedNamespace;
       }
     } catch {
       // first run or corrupt data — use defaults
@@ -103,6 +124,7 @@ export class ChatStore {
         ollamaModel: this.ollamaModel,
         autoRefreshContext: this.autoRefreshContext,
         modelParams: this.modelParams,
+        selectedNamespace: this.selectedNamespace,
       };
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
     } catch {
@@ -175,9 +197,21 @@ export class ChatStore {
     this.saveSettings();
   }
 
+  async setSelectedNamespace(ns: string) {
+    this.selectedNamespace = ns;
+    this.saveSettings();
+    // Immediately clear stale context so the UI doesn't show old data
+    runInAction(() => {
+      this.clusterContext = null;
+    });
+    // Re-gather context for the new namespace
+    await this.refreshClusterContext();
+  }
+
   clearMessages() {
     this.messages = [];
     this.error = null;
+    this.summaryManager.reset();
   }
 
   setError(error: string | null) {
@@ -211,10 +245,27 @@ export class ChatStore {
   async refreshClusterContext() {
     runInAction(() => { this.isGatheringContext = true; });
     try {
-      const ctx = await K8sContextService.gatherContext();
-      runInAction(() => { this.clusterContext = ctx; });
+      const ns = this.selectedNamespace === "__all__" ? undefined : this.selectedNamespace;
+      const ctx = await K8sContextService.gatherContext(ns);
+      runInAction(() => {
+        this.clusterContext = ctx;
+        // Update available namespaces list
+        if (ctx.namespaces.length > 0) {
+          this.availableNamespaces = ctx.namespaces;
+        }
+      });
+      console.log(
+        "[K8s SRE] Cluster context refreshed →",
+        `ns=${ns ?? "all"}`,
+        `pods=${ctx.pods.length}`,
+        `deployments=${ctx.deployments.length}`,
+        `services=${ctx.services.length}`,
+        `nodes=${ctx.nodes.length}`,
+        `events=${ctx.events.length}`,
+      );
     } catch (e: any) {
       console.warn("[K8s SRE] Failed to gather cluster context:", e);
+      // Keep previous context if available rather than wiping it
     } finally {
       runInAction(() => { this.isGatheringContext = false; });
     }
@@ -255,13 +306,42 @@ export class ChatStore {
     });
 
     try {
-      const conversationMessages = this.messages
-        .filter((m) => m.role !== "system" && !m.isStreaming)
-        .concat([userMessage]);
+      /* ── Context pipeline ── */
 
-      const stream = this.ollamaService.streamChat(
-        conversationMessages,
+      // 1. Build system prompt (SRE persona + live K8s data)
+      const systemPrompt = this.ollamaService.buildSystemPrompt(
         this.clusterContext || undefined,
+      );
+
+      // 2. Maybe compress old turns in background (only if threshold reached)
+      //    This calls Ollama once, only when needed.
+      const summary = await this.summaryManager.maybeCompress(
+        this.messages,
+        userMessage.content,
+      );
+
+      // 3. Chunk the full history + BM25 retrieve top-5
+      const allChunks = this.chunkManager.buildChunks(this.messages);
+      const bm25Index = BM25Retriever.buildIndex(allChunks);
+      const retrievedChunks = BM25Retriever.retrieve(bm25Index, userMessage.content, 5);
+
+      // 4. Get recent turns (not summarised)
+      const recentMessages = this.summaryManager.getRecentMessages(this.messages);
+
+      // 5. Assemble the final prompt
+      const assembled = ContextBuilder.assemble(
+        systemPrompt,
+        summary,
+        retrievedChunks,
+        recentMessages,
+        userMessage,
+      );
+
+      console.log("[K8s SRE] Context pipeline →", JSON.stringify(assembled.debug));
+
+      // 6. Stream via Ollama using the assembled context
+      const stream = this.ollamaService.streamChatAssembled(
+        assembled.messages,
         { ...this.modelParams },
       );
 
@@ -285,6 +365,10 @@ export class ChatStore {
             ...this.messages[finalIndex],
             isStreaming: false,
           };
+        }
+        // Capture performance stats from Ollama's final chunk
+        if (this.ollamaService.lastStats) {
+          this.lastPerformanceStats = { ...this.ollamaService.lastStats };
         }
       });
     } catch (e: any) {

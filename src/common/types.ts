@@ -19,6 +19,7 @@ export interface OllamaConfig {
 export interface ClusterContext {
   clusterName: string;
   namespace: string;
+  namespaces: string[];
   pods: K8sResourceSummary[];
   deployments: K8sResourceSummary[];
   services: K8sResourceSummary[];
@@ -86,6 +87,27 @@ export interface OllamaStreamChunk {
     content: string;
   };
   done: boolean;
+  /* ── Performance fields (only present when done=true) ── */
+  total_duration?: number;       // nanoseconds
+  load_duration?: number;        // nanoseconds
+  prompt_eval_count?: number;    // tokens evaluated in the prompt
+  prompt_eval_duration?: number; // nanoseconds
+  eval_count?: number;           // tokens generated
+  eval_duration?: number;        // nanoseconds
+}
+
+/** Parsed performance stats from Ollama's final streaming chunk. */
+export interface OllamaPerformanceStats {
+  model: string;
+  totalDurationMs: number;
+  promptTokens: number;
+  promptEvalMs: number;
+  promptTokensPerSec: number;
+  generatedTokens: number;
+  generationMs: number;
+  tokensPerSec: number;
+  loadMs: number;
+  timestamp: number;
 }
 
 export interface OllamaModelInfo {
@@ -93,4 +115,15 @@ export interface OllamaModelInfo {
   size: number;
   digest: string;
   modified_at: string;
+}
+
+/* ── Context pipeline types (used by ChunkManager / BM25 / SummaryManager) ── */
+
+export interface ConversationState {
+  /** Current summary of old turns (empty string if none) */
+  summary: string;
+  /** Index up to which messages have been summarised */
+  summarisedUpToIndex: number;
+  /** Whether a summary is currently being generated */
+  isSummarising: boolean;
 }

@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage, OllamaModelParams } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { ChatStore } from "../stores/chat-store";
+import { nodeRequestJson } from "../services/ollama-service";
 import { MarkdownRenderer } from "./markdown-renderer";
 
 const chatStore = ChatStore.getInstance();
@@ -386,6 +387,7 @@ export const SreChat = observer(() => {
 
   const [showParams, setShowParams] = useState(false);
   const [showConnection, setShowConnection] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const connected = chatStore.isOllamaConnected;
   const ctx = chatStore.clusterContext;
   const warnCount = ctx ? ctx.events.filter((ev) => ev.type === "Warning").length : 0;
@@ -444,6 +446,21 @@ export const SreChat = observer(() => {
               ⚙️
             </button>
           )}
+          {connected && chatStore.lastPerformanceStats && (
+            <button
+              style={{
+                ...S.btn,
+                fontSize: "10px",
+                padding: "3px 8px",
+                color: "#a6e3a1",
+                borderColor: "rgba(166,227,161,.3)",
+              }}
+              onClick={() => setShowStats((p) => !p)}
+              title="Last response performance stats"
+            >
+              ⚡ {chatStore.lastPerformanceStats.tokensPerSec} t/s
+            </button>
+          )}
           <button style={S.btn} onClick={() => chatStore.refreshClusterContext()} disabled={chatStore.isGatheringContext}>
             🔄 {chatStore.isGatheringContext ? "Scanning…" : "Refresh"}
           </button>
@@ -459,16 +476,59 @@ export const SreChat = observer(() => {
       {/* ── Connection panel (same context) ── */}
       {showConnection && <ConnectionPanel onClose={() => setShowConnection(false)} />}
 
+      {/* ── Performance stats panel ── */}
+      {showStats && <StatsPanel onClose={() => setShowStats(false)} />}
+
       {/* ── Context bar ── */}
-      {ctx && (
+      {(ctx || chatStore.isGatheringContext) && (
         <div style={S.ctx}>
           <span>📡</span>
-          <span style={S.chip}>{ctx.clusterName}</span>
-          {warnCount > 0 ? (
-            <span style={S.chipWarn}>⚠️ {warnCount} Warning{warnCount > 1 ? "s" : ""}</span>
-          ) : (
-            <span style={S.chipOk}>✓ Healthy</span>
-          )}
+          <span style={S.chip}>{ctx?.clusterName ?? "Loading…"}</span>
+          {/* Namespace selector */}
+          <select
+            style={{
+              padding: "2px 8px",
+              border: "1px solid var(--borderColor, #313244)",
+              borderRadius: "10px",
+              background: "var(--mainBackground, #1e1e2e)",
+              color: "#89b4fa",
+              fontSize: "11px",
+              fontWeight: 500,
+              outline: "none",
+              cursor: "pointer",
+              maxWidth: "200px",
+            }}
+            value={chatStore.selectedNamespace}
+            onChange={(e) => chatStore.setSelectedNamespace(e.target.value)}
+            title="Filter context by namespace"
+            disabled={chatStore.isGatheringContext}
+          >
+            <option value="__all__">📦 All Namespaces</option>
+            {chatStore.availableNamespaces.map((ns) => (
+              <option key={ns} value={ns}>
+                📁 {ns}
+              </option>
+            ))}
+          </select>
+          {chatStore.isGatheringContext ? (
+            <span style={{ fontSize: "11px", color: "var(--textColorSecondary, #a6adc8)" }}>
+              ⏳ Refreshing context…
+            </span>
+          ) : ctx ? (
+            <>
+              <span style={{ ...S.chip, background: "rgba(137,180,250,.08)" }}>
+                {ctx.pods.length} pods
+              </span>
+              <span style={{ ...S.chip, background: "rgba(137,180,250,.08)" }}>
+                {ctx.deployments.length} deploy
+              </span>
+              {warnCount > 0 ? (
+                <span style={S.chipWarn}>⚠️ {warnCount} Warning{warnCount > 1 ? "s" : ""}</span>
+              ) : (
+                <span style={S.chipOk}>✓ Healthy</span>
+              )}
+            </>
+          ) : null}
         </div>
       )}
 
@@ -763,44 +823,17 @@ const ConnectionPanel = observer(({ onClose }: { onClose: () => void }) => {
     const logs: string[] = [`Testing: ${url}`];
 
     try {
-      let data: any;
-      let method = "fetch";
+      logs.push("Using Node.js HTTP (bypasses mixed-content)…");
+      setDebugInfo(logs.join("\n"));
 
-      try {
-        logs.push("Trying fetch…");
-        setDebugInfo(logs.join("\n"));
-        const resp = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5000) });
-        logs.push(`fetch status: ${resp.status} ok: ${resp.ok}`);
-        setDebugInfo(logs.join("\n"));
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const text = await resp.text();
-        logs.push(`Body length: ${text.length}`);
-        setDebugInfo(logs.join("\n"));
-        data = JSON.parse(text);
-      } catch (fetchErr: any) {
-        logs.push(`fetch error: ${fetchErr.message}`);
-        logs.push("Trying XHR fallback…");
-        setDebugInfo(logs.join("\n"));
-        method = "XHR";
+      const result = await nodeRequestJson(url, 5000);
+      logs.push(`Response status: ${result.status} ok: ${result.ok}`);
+      setDebugInfo(logs.join("\n"));
 
-        data = await new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("GET", url, true);
-          xhr.timeout = 5000;
-          xhr.onload = () => {
-            logs.push(`XHR status: ${xhr.status}`);
-            setDebugInfo(logs.join("\n"));
-            try { resolve(JSON.parse(xhr.responseText)); }
-            catch { reject(new Error("JSON parse error")); }
-          };
-          xhr.onerror = () => { logs.push("XHR network error"); setDebugInfo(logs.join("\n")); reject(new Error("XHR network error")); };
-          xhr.ontimeout = () => { logs.push("XHR timeout"); setDebugInfo(logs.join("\n")); reject(new Error("XHR timeout")); };
-          xhr.send();
-        });
-      }
+      if (!result.ok) throw new Error(`HTTP ${result.status}`);
 
-      const modelList = data?.models || [];
-      logs.push(`✓ Connected via ${method}. Models: ${modelList.length}`);
+      const modelList = result.data?.models || [];
+      logs.push(`✓ Connected. Models: ${modelList.length}`);
       if (modelList.length > 0) {
         logs.push(modelList.map((m: any) => m.name).join(", "));
       } else {
@@ -908,4 +941,111 @@ const ConnectionPanel = observer(({ onClose }: { onClose: () => void }) => {
   );
 });
 
+/* ── Performance Stats panel ── */
+const statRow = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "4px 0",
+  borderBottom: "1px solid rgba(49,50,68,.5)",
+};
+const statLabel = {
+  fontSize: "11px",
+  color: "var(--textColorSecondary, #a6adc8)",
+};
+const statValue = {
+  fontSize: "12px",
+  fontWeight: 600,
+  fontFamily: "monospace",
+  color: "#89b4fa",
+};
+const statHighlight = {
+  fontSize: "14px",
+  fontWeight: 700,
+  fontFamily: "monospace",
+  color: "#a6e3a1",
+};
 
+const StatsPanel = observer(({ onClose }: { onClose: () => void }) => {
+  const stats = chatStore.lastPerformanceStats;
+
+  if (!stats) return null;
+
+  const speedColor = stats.tokensPerSec >= 20 ? "#a6e3a1" : stats.tokensPerSec >= 8 ? "#f9e2af" : "#f38ba8";
+  const speedLabel = stats.tokensPerSec >= 20 ? "Fast" : stats.tokensPerSec >= 8 ? "Moderate" : "Slow";
+
+  return (
+    <>
+      <div style={pS.overlay} onClick={onClose} />
+      <div style={{ ...pS.panel, right: "80px", width: "300px" }}>
+        <div style={pS.head}>
+          <h4 style={pS.title}>⚡ Performance Stats</h4>
+          <button style={pS.close} onClick={onClose}>✕</button>
+        </div>
+
+        {/* Hero: tokens/sec */}
+        <div style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          padding: "10px 0 8px",
+          gap: "4px",
+        }}>
+          <span style={{ ...statHighlight, fontSize: "28px", color: speedColor }}>
+            {stats.tokensPerSec}
+          </span>
+          <span style={{ fontSize: "11px", color: speedColor, fontWeight: 500 }}>
+            tokens/sec · {speedLabel}
+          </span>
+          <span style={{ fontSize: "10px", color: "var(--textColorSecondary, #a6adc8)" }}>
+            {stats.model}
+          </span>
+        </div>
+
+        {/* Detail rows */}
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <div style={statRow}>
+            <span style={statLabel}>⏱️ Total time</span>
+            <span style={statValue}>{(stats.totalDurationMs / 1000).toFixed(1)}s</span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>📥 Prompt tokens</span>
+            <span style={statValue}>{stats.promptTokens.toLocaleString()}</span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>📥 Prompt eval</span>
+            <span style={statValue}>
+              {(stats.promptEvalMs / 1000).toFixed(1)}s ({stats.promptTokensPerSec} t/s)
+            </span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>📤 Generated tokens</span>
+            <span style={statValue}>{stats.generatedTokens.toLocaleString()}</span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>📤 Generation time</span>
+            <span style={statValue}>{(stats.generationMs / 1000).toFixed(1)}s</span>
+          </div>
+          <div style={statRow}>
+            <span style={statLabel}>🔄 Model load</span>
+            <span style={statValue}>{stats.loadMs}ms</span>
+          </div>
+        </div>
+
+        {/* Tip */}
+        <div style={{
+          marginTop: "6px",
+          padding: "6px 8px",
+          background: "rgba(137,180,250,.06)",
+          borderRadius: "6px",
+          fontSize: "10px",
+          color: "var(--textColorSecondary, #a6adc8)",
+          lineHeight: 1.4,
+        }}>
+          💡 Compare models by switching in the header dropdown. Lower prompt tokens = better context compression.
+          Higher t/s = faster responses.
+        </div>
+      </div>
+    </>
+  );
+});
