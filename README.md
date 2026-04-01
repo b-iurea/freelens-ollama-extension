@@ -8,14 +8,13 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 ## 📸 Screenshots
 
 <!-- TODO: Add screenshots -->
-
 | Screenshot | Description |
 |:----------:|-------------|
-| <!-- ![Chat UI](docs/screenshots/chat-ui.png) --> | **Chat interface** — Ask questions about your cluster, get streaming Markdown responses |
-| <!-- ![Context Bar](docs/screenshots/context-bar.png) --> | **Context bar** — Cluster name, namespace selector, resource counts, health badge |
-| <!-- ![Connection Panel](docs/screenshots/connection-panel.png) --> | **Connection panel** — Configure Ollama endpoint, test connectivity |
-| <!-- ![Model Params](docs/screenshots/model-params.png) --> | **Model parameters** — Tune temperature, top_p, top_k, repeat penalty |
-| <!-- ![Performance Stats](docs/screenshots/perf-stats.png) --> | **Performance stats** — Tokens/sec, prompt eval, generation time |
+![Chat UI](docs/screenshots/chat-ui.png) | **Chat interface** — Ask questions about your cluster, get streaming Markdown responses |
+![Context Bar](docs/screenshots/context-bar.png) | **Context bar** — Cluster name, namespace selector, resource counts, health badge |
+![Connection Panel](docs/screenshots/connection-panel.png) | **Connection panel** — Configure Ollama endpoint, test connectivity |
+![Model Params](docs/screenshots/model-params.png) | **Model parameters** — Tune temperature, top_p, top_k, repeat penalty |
+![Performance Stats](docs/screenshots/perf-stats.png) | **Performance stats** — Tokens/sec, prompt eval, generation time |
 
 ## ✨ Features
 
