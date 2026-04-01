@@ -461,15 +461,55 @@ export const SreChat = observer(() => {
       {showConnection && <ConnectionPanel onClose={() => setShowConnection(false)} />}
 
       {/* ── Context bar ── */}
-      {ctx && (
+      {(ctx || chatStore.isGatheringContext) && (
         <div style={S.ctx}>
           <span>📡</span>
-          <span style={S.chip}>{ctx.clusterName}</span>
-          {warnCount > 0 ? (
-            <span style={S.chipWarn}>⚠️ {warnCount} Warning{warnCount > 1 ? "s" : ""}</span>
-          ) : (
-            <span style={S.chipOk}>✓ Healthy</span>
-          )}
+          <span style={S.chip}>{ctx?.clusterName ?? "Loading…"}</span>
+          {/* Namespace selector */}
+          <select
+            style={{
+              padding: "2px 8px",
+              border: "1px solid var(--borderColor, #313244)",
+              borderRadius: "10px",
+              background: "var(--mainBackground, #1e1e2e)",
+              color: "#89b4fa",
+              fontSize: "11px",
+              fontWeight: 500,
+              outline: "none",
+              cursor: "pointer",
+              maxWidth: "200px",
+            }}
+            value={chatStore.selectedNamespace}
+            onChange={(e) => chatStore.setSelectedNamespace(e.target.value)}
+            title="Filter context by namespace"
+            disabled={chatStore.isGatheringContext}
+          >
+            <option value="__all__">📦 All Namespaces</option>
+            {chatStore.availableNamespaces.map((ns) => (
+              <option key={ns} value={ns}>
+                📁 {ns}
+              </option>
+            ))}
+          </select>
+          {chatStore.isGatheringContext ? (
+            <span style={{ fontSize: "11px", color: "var(--textColorSecondary, #a6adc8)" }}>
+              ⏳ Refreshing context…
+            </span>
+          ) : ctx ? (
+            <>
+              <span style={{ ...S.chip, background: "rgba(137,180,250,.08)" }}>
+                {ctx.pods.length} pods
+              </span>
+              <span style={{ ...S.chip, background: "rgba(137,180,250,.08)" }}>
+                {ctx.deployments.length} deploy
+              </span>
+              {warnCount > 0 ? (
+                <span style={S.chipWarn}>⚠️ {warnCount} Warning{warnCount > 1 ? "s" : ""}</span>
+              ) : (
+                <span style={S.chipOk}>✓ Healthy</span>
+              )}
+            </>
+          ) : null}
         </div>
       )}
 

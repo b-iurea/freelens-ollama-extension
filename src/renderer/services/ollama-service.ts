@@ -189,101 +189,147 @@ export class OllamaService {
   }
 
   /**
-   * Build system prompt with Kubernetes cluster context
+   * Build system prompt with Kubernetes cluster context.
+   * Optimised for small models: concise, structured, low token count.
    */
   buildSystemPrompt(clusterContext?: ClusterContext): string {
-    let prompt = `You are an expert Kubernetes SRE (Site Reliability Engineer) assistant embedded in Freelens, a professional Kubernetes IDE.
+    let prompt = `You are an expert Kubernetes SRE assistant embedded in Freelens (a K8s IDE).
 
-ROLE & PERSONALITY:
-- You are a senior SRE with 10+ years of experience managing production Kubernetes clusters.
-- You are precise, methodical, and safety-conscious.
-- When in doubt, you ask clarifying questions rather than making assumptions.
-- You always consider the blast radius of any suggested changes.
+ROLE: Senior SRE with deep expertise in troubleshooting, monitoring, security, performance, and reliability of Kubernetes clusters.
 
-CORE COMPETENCIES:
-1. TROUBLESHOOTING: Root cause analysis of pod crashes, OOMKills, CrashLoopBackOff, ImagePullBackOff, scheduling failures, networking issues, DNS problems, storage mount failures
-2. MONITORING & OBSERVABILITY: Prometheus, Grafana, AlertManager, Loki, Jaeger, OpenTelemetry, metrics interpretation, SLI/SLO/SLA definition
-3. SECURITY: RBAC analysis, NetworkPolicy design, PodSecurityStandards, secret management, image scanning, supply chain security, least privilege principle
-4. PERFORMANCE: Resource requests/limits tuning, HPA/VPA configuration, cluster autoscaling, JVM/memory optimization, CPU throttling analysis
-5. RELIABILITY: PodDisruptionBudgets, anti-affinity rules, topology spread, graceful shutdown, readiness/liveness probes, rolling update strategies
-6. NETWORKING: Service mesh (Istio/Linkerd), Ingress controllers, DNS debugging, CNI issues, load balancing, mTLS
-7. STORAGE: PV/PVC management, StorageClass configuration, CSI drivers, backup strategies
-8. GITOPS & CI/CD: Helm charts, Kustomize, ArgoCD, FluxCD, deployment strategies (blue-green, canary)
-
-RESPONSE FORMAT RULES:
-- Use Markdown formatting for readability
-- Always put kubectl commands in \`\`\`bash code blocks
-- When listing resources, use tables when there are multiple columns
-- Prefix dangerous/destructive commands with ⚠️ WARNING
-- After diagnosing a problem, always provide: 1) Root cause 2) Immediate fix 3) Long-term prevention
-- Keep responses focused and actionable — avoid unnecessary preambles
-- When showing YAML manifests, always include necessary comments
-- If a question is ambiguous, list the possible interpretations and address each
-
-SAFETY RULES:
-- Never suggest \`kubectl delete\` without warning and confirmation guidance
-- Always mention \`--dry-run=client\` for apply/create commands when appropriate
-- Suggest \`kubectl diff\` before \`kubectl apply\` for changes
-- Warn about production impact of any scaling or restart operations
+RULES:
+- Use Markdown. Put kubectl commands in \`\`\`bash blocks.
+- Prefix destructive commands with ⚠️ WARNING.
+- For problems: give Root Cause → Immediate Fix → Long-term Prevention.
+- Analyse the LIVE cluster data below FIRST. Only suggest kubectl for actions or data NOT already provided.
+- Never suggest \`kubectl delete\` without warning. Mention \`--dry-run=client\` where appropriate.
 `;
 
     if (clusterContext) {
-      prompt += `\n\n--- CURRENT CLUSTER CONTEXT ---\n`;
+      const scope = clusterContext.namespace;
+      prompt += `\n--- LIVE CLUSTER CONTEXT ---\n`;
       prompt += `Cluster: ${clusterContext.clusterName}\n`;
-      prompt += `Active Namespace: ${clusterContext.namespace}\n\n`;
+      prompt += `Scope: ${scope}\n`;
 
+      // Namespaces (compact list)
+      if (clusterContext.namespaces.length > 0) {
+        prompt += `Namespaces (${clusterContext.namespaces.length}): ${clusterContext.namespaces.join(", ")}\n`;
+      }
+
+      // Nodes (always cluster-scoped)
       if (clusterContext.nodes.length > 0) {
-        prompt += `NODES (${clusterContext.nodes.length}):\n`;
-        for (const node of clusterContext.nodes) {
-          prompt += `  - ${node.name} [Status: ${node.status || "Unknown"}]\n`;
+        prompt += `\nNODES (${clusterContext.nodes.length}):\n`;
+        for (const n of clusterContext.nodes) {
+          prompt += `  ${n.name} [${n.status || "?"}]\n`;
         }
-        prompt += "\n";
       }
 
+      // Helper: group resources by namespace for compact display
+      const groupByNs = <T extends { namespace?: string }>(items: T[]): Map<string, T[]> => {
+        const m = new Map<string, T[]>();
+        for (const item of items) {
+          const ns = item.namespace || "default";
+          if (!m.has(ns)) m.set(ns, []);
+          m.get(ns)!.push(item);
+        }
+        return m;
+      };
+
+      // Pods
       if (clusterContext.pods.length > 0) {
-        prompt += `PODS (${clusterContext.pods.length}):\n`;
-        for (const pod of clusterContext.pods) {
-          prompt += `  - ${pod.namespace}/${pod.name} [Status: ${pod.status || "Unknown"}, Ready: ${pod.ready || "?"}]\n`;
+        const byNs = groupByNs(clusterContext.pods);
+        prompt += `\nPODS (${clusterContext.pods.length}):\n`;
+        for (const [ns, pods] of byNs) {
+          prompt += `  [${ns}]\n`;
+          for (const p of pods) {
+            prompt += `    ${p.name}  ${p.status || "?"}  ready=${p.ready || "?"}\n`;
+          }
         }
-        prompt += "\n";
       }
 
+      // Deployments
       if (clusterContext.deployments.length > 0) {
-        prompt += `DEPLOYMENTS (${clusterContext.deployments.length}):\n`;
-        for (const dep of clusterContext.deployments) {
-          prompt += `  - ${dep.namespace}/${dep.name} [Replicas: ${dep.replicas || "?"}]\n`;
+        const byNs = groupByNs(clusterContext.deployments);
+        prompt += `\nDEPLOYMENTS (${clusterContext.deployments.length}):\n`;
+        for (const [ns, deps] of byNs) {
+          prompt += `  [${ns}]\n`;
+          for (const d of deps) {
+            prompt += `    ${d.name}  replicas=${d.replicas || "?"}\n`;
+          }
         }
-        prompt += "\n";
       }
 
+      // Services
       if (clusterContext.services.length > 0) {
-        prompt += `SERVICES (${clusterContext.services.length}):\n`;
-        for (const svc of clusterContext.services) {
-          prompt += `  - ${svc.namespace}/${svc.name}\n`;
+        const byNs = groupByNs(clusterContext.services);
+        prompt += `\nSERVICES (${clusterContext.services.length}):\n`;
+        for (const [ns, svcs] of byNs) {
+          prompt += `  [${ns}]\n`;
+          for (const s of svcs) {
+            prompt += `    ${s.name}  type=${s.status || "ClusterIP"}\n`;
+          }
         }
-        prompt += "\n";
       }
 
+      // Events — warnings first, then a few normals
       if (clusterContext.events.length > 0) {
-        prompt += `RECENT EVENTS (last ${clusterContext.events.length}):\n`;
-        for (const event of clusterContext.events) {
-          prompt += `  - [${event.type}] ${event.reason}: ${event.message} (${event.involvedObject})\n`;
+        const warnings = clusterContext.events.filter(e => e.type === "Warning");
+        const normals = clusterContext.events.filter(e => e.type !== "Warning");
+        prompt += `\nEVENTS (${clusterContext.events.length}, ${warnings.length} warnings):\n`;
+        if (warnings.length > 0) {
+          prompt += `  ⚠ WARNINGS:\n`;
+          for (const e of warnings) {
+            prompt += `    [${e.reason}] ${e.involvedObject}: ${e.message}\n`;
+          }
         }
-        prompt += "\n";
+        if (normals.length > 0) {
+          const show = normals.slice(0, 10);
+          prompt += `  NORMAL (latest ${show.length}):\n`;
+          for (const e of show) {
+            prompt += `    [${e.reason}] ${e.involvedObject}: ${e.message}\n`;
+          }
+        }
       }
 
       prompt += `--- END CLUSTER CONTEXT ---\n`;
-      prompt += `\nIMPORTANT: You MUST use the cluster data above to answer the user's questions. Do NOT suggest 'kubectl' commands to gather information that is already provided above. Analyze the data directly. Only suggest kubectl commands for actions (apply, delete, scale, etc.) or for data that is NOT included above.\n`;
     } else {
-      prompt += `\n\n--- NO CLUSTER CONTEXT AVAILABLE ---\n`;
-      prompt += `Cluster context could not be gathered. You may suggest kubectl commands to help the user investigate.\n`;
+      prompt += `\n(No cluster context available — suggest kubectl commands to investigate.)\n`;
     }
 
     return prompt;
   }
 
   /**
+   * Low-level non-streaming completion — used by SummaryManager to compress
+   * conversation history.  Returns the model's text response.
+   */
+  async generateText(prompt: string): Promise<string> {
+    const request: OllamaChatRequest = {
+      model: this.model,
+      messages: [{ role: "user", content: prompt }],
+      stream: false,
+      options: { temperature: 0.3, top_p: 0.9, top_k: 40, num_predict: 512, repeat_penalty: 1.0 },
+    };
+
+    console.log("[K8s SRE] generateText (summary) →", `model=${this.model}`, `prompt=${prompt.length} chars`);
+
+    const res = await nodeRequest(`${this.endpoint}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      timeout: 60_000,
+    });
+
+    if (!res.ok) throw new Error(`Ollama API error: HTTP ${res.status}`);
+    const data = JSON.parse(res.body);
+    return data.message?.content || "";
+  }
+
+  /**
    * Send a chat message and stream the response (uses Node.js http — no mixed-content issues)
+   *
+   * Accepts either the legacy (messages + clusterContext) signature or
+   * a pre-assembled message array from ContextBuilder.
    */
   async *streamChat(
     messages: ChatMessage[],
@@ -430,6 +476,77 @@ SAFETY RULES:
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
+    }
+  }
+
+  /**
+   * Stream a chat using a pre-assembled message array (from ContextBuilder).
+   * This bypasses buildSystemPrompt — the caller is responsible for the full
+   * message list including system prompt, summary, chunks, recent turns.
+   */
+  async *streamChatAssembled(
+    assembledMessages: Array<{ role: string; content: string }>,
+    modelParams?: OllamaModelParams,
+  ): AsyncGenerator<string, void, unknown> {
+    this.abortController = new AbortController();
+
+    const request: OllamaChatRequest = {
+      model: this.model,
+      messages: assembledMessages,
+      stream: true,
+      ...(modelParams ? { options: { ...modelParams } } : {}),
+    };
+
+    console.log("[K8s SRE] streamChatAssembled →", JSON.stringify({
+      model: request.model,
+      messagesCount: request.messages.length,
+      totalChars: request.messages.reduce((s, m) => s + m.content.length, 0),
+    }));
+
+    const body = JSON.stringify(request);
+    const { response, abort } = nodeStreamRequest(`${this.endpoint}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      timeout: 300_000,
+    });
+
+    this.currentAbort = abort;
+
+    try {
+      const { stream } = await response;
+      let buffer = "";
+
+      for await (const rawChunk of stream) {
+        buffer += rawChunk;
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const chunk: OllamaStreamChunk = JSON.parse(line);
+            if (chunk.message?.content) yield chunk.message.content;
+            if (chunk.done) return;
+          } catch { /* skip malformed */ }
+        }
+      }
+
+      if (buffer.trim()) {
+        try {
+          const chunk: OllamaStreamChunk = JSON.parse(buffer);
+          if (chunk.message?.content) yield chunk.message.content;
+        } catch { /* ignore */ }
+      }
+    } catch (error: any) {
+      if (error.name === "AbortError" || error.message?.includes("aborted") || error.message?.includes("destroyed")) {
+        yield "\n\n*[Response interrupted]*";
+        return;
+      }
+      throw error;
+    } finally {
+      this.abortController = null;
+      this.currentAbort = null;
     }
   }
 }
