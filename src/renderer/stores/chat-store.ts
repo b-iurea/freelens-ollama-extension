@@ -41,6 +41,24 @@ const SRE_MODE_INSTRUCTIONS: Record<SreModeKey, string> = {
   yaml: "YAML helper mode: prioritize precise Kubernetes manifests, patches and safe apply guidance.",
 };
 
+const SRE_INTERNAL_ROLES = [
+  "Investigator: extract facts, anomalies, and confidence levels from cluster data.",
+  "Explainer: translate technical findings into concise root-cause narratives.",
+  "YAML Author: provide minimal, safe manifests/patches only when explicitly requested.",
+  "Change Planner: sequence low-risk actions with validation and rollback checks.",
+].join("\n");
+
+const SRE_RESPONSE_CONTRACT = [
+  "Always answer with this section order:",
+  "1) Evidence",
+  "2) Correlation",
+  "3) Hypotheses (ranked)",
+  "4) Immediate checks",
+  "5) Safest next actions",
+  "Only include section 6) YAML/Commands when user explicitly asks to write/apply changes.",
+  "When proposing commands or YAML, prepend: RISK: low|medium|high and include a dry-run/verification step.",
+].join("\n");
+
 export class ChatStore {
   messages: ChatMessage[] = [];
   isLoading = false;
@@ -291,6 +309,64 @@ export class ChatStore {
     this.error = error;
   }
 
+  private buildCorrelatedSignalsBlock(): string {
+    const ctx = this.clusterContext;
+    if (!ctx) return "[CORRELATED SIGNALS]\nNo live cluster context available.";
+
+    const lines: string[] = [];
+    const warningEvents = ctx.events.filter((e) => (e.type || "").toLowerCase() === "warning");
+    const crashPods = ctx.pods.filter((p) => (p.status || "").toLowerCase().includes("crashloop"));
+    const replicaMismatch = ctx.deployments.filter((d) => {
+      const [ready, desired] = (d.replicas || "0/0").split("/").map((n) => Number(n));
+      return Number.isFinite(ready) && Number.isFinite(desired) && desired > ready;
+    });
+
+    const eventsByObject = new Map<string, number>();
+    for (const evt of warningEvents) {
+      const key = evt.involvedObject || "?/unknown";
+      eventsByObject.set(key, (eventsByObject.get(key) || 0) + 1);
+    }
+    const topObjects = [...eventsByObject.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    lines.push(`Warning events: ${warningEvents.length}`);
+    lines.push(`CrashLoop-like pods: ${crashPods.length}`);
+    lines.push(`Deployments with replica mismatch: ${replicaMismatch.length}`);
+    if (topObjects.length > 0) {
+      lines.push("Top warning-involved objects:");
+      for (const [obj, count] of topObjects) {
+        lines.push(`- ${obj}: ${count} events`);
+      }
+    }
+
+    const suspicious = [...warningEvents]
+      .slice(0, 8)
+      .map((e) => `- [${e.reason}] ${e.involvedObject}: ${e.message}`);
+    if (suspicious.length > 0) {
+      lines.push("Recent warning samples:");
+      lines.push(...suspicious);
+    }
+
+    return `[CORRELATED SIGNALS]\n${lines.join("\n")}`;
+  }
+
+  private buildSreWorkflowInstruction(userInput: string): string {
+    const wantsMutation = /\b(apply|patch|yaml|manifest|kubectl|delete|edit|rollout|scale|write)\b/i.test(userInput);
+    const writeGate = wantsMutation
+      ? "User requested mutation-oriented output: include YAML/Commands section with minimal blast-radius."
+      : "Read-first mode: do not provide mutating commands or YAML unless user asks explicitly.";
+
+    return [
+      "--- SRE WORKFLOW CONTRACT ---",
+      SRE_INTERNAL_ROLES,
+      "",
+      SRE_RESPONSE_CONTRACT,
+      "",
+      writeGate,
+    ].join("\n");
+  }
+
   async checkConnection() {
     this.syncSettings();
     try {
@@ -388,7 +464,18 @@ export class ChatStore {
         this.clusterContext || undefined,
       );
       const modeInstruction = SRE_MODE_INSTRUCTIONS[this.selectedSreMode];
-      const systemPrompt = `${baseSystemPrompt}\n\n--- ACTIVE SRE MODE ---\n${modeInstruction}`;
+      const correlatedSignals = this.buildCorrelatedSignalsBlock();
+      const workflowInstruction = this.buildSreWorkflowInstruction(userMessage.content);
+      const systemPrompt = [
+        baseSystemPrompt,
+        "",
+        "--- ACTIVE SRE MODE ---",
+        modeInstruction,
+        "",
+        correlatedSignals,
+        "",
+        workflowInstruction,
+      ].join("\n");
 
       // 2. Use existing summary (computed after previous response, not blocking)
       const summary = this.summaryManager.getSummary();
@@ -507,6 +594,10 @@ export class ChatStore {
       actions.add("Draft a safe YAML patch with explanation and dry-run command");
     }
 
+    if (this.messages.length >= 4) {
+      actions.add("Generate an operations runbook from this investigation");
+    }
+
     if (actions.size === 0) {
       actions.add("Summarize cluster health and top risks right now");
       actions.add("Recommend the next 3 troubleshooting steps");
@@ -530,6 +621,11 @@ export class ChatStore {
       { name: "Services", status: c.services.length > 0 ? "ready" : "missing", detail: `${c.services.length} loaded` },
       { name: "Nodes", status: c.nodes.length > 0 ? "ready" : "missing", detail: `${c.nodes.length} loaded` },
       { name: "Events", status: c.events.length > 0 ? "ready" : "missing", detail: `${c.events.length} loaded` },
+      {
+        name: "Event Correlation",
+        status: c.events.length >= 3 ? "ready" : c.events.length > 0 ? "partial" : "missing",
+        detail: c.events.length >= 3 ? "Multi-signal correlation active" : c.events.length > 0 ? "Sparse events" : "No event signals",
+      },
       { name: "Conversation Memory", status: this.messages.length > 0 ? "ready" : "partial", detail: `${this.messages.length} messages` },
     ];
   }
@@ -591,6 +687,87 @@ export class ChatStore {
       return { ok: true, message: "Incident summary exported" };
     } catch (e: any) {
       return { ok: false, message: `Export failed: ${e?.message || "unknown error"}` };
+    }
+  }
+
+  buildRunbookMarkdown(): string {
+    const ctx = this.clusterContext;
+    const now = new Date().toISOString();
+    const warningEvents = ctx ? ctx.events.filter((e) => e.type === "Warning") : [];
+    const recentUserQuestions = this.messages
+      .filter((m) => m.role === "user")
+      .slice(-5)
+      .map((m) => `- ${m.content}`);
+    const latestAssistant = [...this.messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.content.trim())?.content || "No assistant analysis available.";
+
+    return [
+      "# SRE Operational Runbook",
+      "",
+      `- Generated: ${now}`,
+      `- Cluster: ${ctx?.clusterName || "unknown"}`,
+      `- Namespace scope: ${this.selectedNamespace === "__all__" ? "all" : this.selectedNamespace}`,
+      `- Active mode: ${this.selectedSreMode}`,
+      "",
+      "## Trigger and Scope",
+      "",
+      ...(recentUserQuestions.length > 0 ? recentUserQuestions : ["- No explicit trigger question found."]),
+      "",
+      "## Signals",
+      "",
+      `- Warning events: ${warningEvents.length}`,
+      `- Pods in view: ${ctx?.pods.length ?? 0}`,
+      `- Deployments in view: ${ctx?.deployments.length ?? 0}`,
+      "",
+      "## Triage Checklist",
+      "",
+      "- [ ] Confirm blast radius (namespaces, workloads, user impact)",
+      "- [ ] Verify top warning events and affected objects",
+      "- [ ] Check rollout/replica status for impacted deployments",
+      "- [ ] Validate pod/container state and recent restart patterns",
+      "- [ ] Capture evidence before any change",
+      "",
+      "## Candidate Actions (Read-First)",
+      "",
+      "- [ ] Run non-mutating checks first (describe/get/logs/events)",
+      "- [ ] Define rollback path before mutating actions",
+      "- [ ] Use dry-run for manifests/patches",
+      "",
+      "## Latest Assistant Analysis",
+      "",
+      latestAssistant,
+      "",
+      "## Verification",
+      "",
+      "- [ ] Confirm warning/event reduction after action",
+      "- [ ] Confirm workload availability and readiness",
+      "- [ ] Confirm no regression in adjacent services",
+      "",
+      "## Handoff Notes",
+      "",
+      "- Owner:",
+      "- Next checkpoint:",
+      "- Escalation criteria:",
+    ].join("\n");
+  }
+
+  exportRunbook(): { ok: boolean; message: string } {
+    try {
+      const md = this.buildRunbookMarkdown();
+      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const cluster = (this.clusterContext?.clusterName || "cluster").replace(/\s+/g, "-").toLowerCase();
+      const ns = (this.selectedNamespace || "all").replace(/\s+/g, "-").toLowerCase();
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `sre-runbook-${cluster}-${ns}-${ts}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return { ok: true, message: "Runbook exported" };
+    } catch (e: any) {
+      return { ok: false, message: `Runbook export failed: ${e?.message || "unknown error"}` };
     }
   }
 }

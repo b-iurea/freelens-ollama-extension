@@ -33,6 +33,47 @@ const SRE_MODE_OPTIONS = [
   { key: "yaml", label: "📄 YAML" },
 ] as const;
 
+type PanelAnchor = {
+  top: number;
+  left: number;
+};
+
+function buildPanelStyle(anchor: PanelAnchor | null, width: number, root: HTMLDivElement | null): React.CSSProperties {
+  const fallbackTop = 52;
+  const fallbackLeft = 12;
+
+  if (!anchor || !root) {
+    return {
+      ...pS.panel,
+      width: `${width}px`,
+      top: `${fallbackTop}px`,
+      left: `${fallbackLeft}px`,
+      right: "auto",
+    };
+  }
+
+  const maxLeft = Math.max(8, root.clientWidth - width - 8);
+  const clampedLeft = Math.min(Math.max(8, anchor.left), maxLeft);
+  const maxTop = Math.max(52, root.clientHeight - 120);
+  const clampedTop = Math.min(Math.max(52, anchor.top), maxTop);
+
+  return {
+    ...pS.panel,
+    width: `${width}px`,
+    top: `${clampedTop}px`,
+    left: `${clampedLeft}px`,
+    right: "auto",
+  };
+}
+
+function extractEndpointHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return endpoint.replace(/^https?:\/\//i, "");
+  }
+}
+
 function buildObjectAwarePromptFromUrl(): string | null {
   try {
     const params = new URLSearchParams(window.location.search);
@@ -420,6 +461,7 @@ export const SreChat = observer(() => {
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // scroll to bottom on new content
   const lastMsg = chatStore.lastMessage;
@@ -467,10 +509,24 @@ export const SreChat = observer(() => {
   const [showConnection, setShowConnection] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showSources, setShowSources] = useState(false);
+  const [paramsAnchor, setParamsAnchor] = useState<PanelAnchor | null>(null);
+  const [connectionAnchor, setConnectionAnchor] = useState<PanelAnchor | null>(null);
+  const [statsAnchor, setStatsAnchor] = useState<PanelAnchor | null>(null);
+  const [sourcesAnchor, setSourcesAnchor] = useState<PanelAnchor | null>(null);
   const connected = chatStore.isOllamaConnected;
   const ctx = chatStore.clusterContext;
   const warnCount = ctx ? ctx.events.filter((ev) => ev.type === "Warning").length : 0;
   const quickActions = chatStore.getSuggestedActions();
+  const endpointHost = extractEndpointHost(chatStore.ollamaEndpoint);
+
+  const getAnchor = useCallback((el: HTMLElement): PanelAnchor => {
+    const rootRect = rootRef.current?.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    return {
+      top: rect.bottom - (rootRect?.top ?? 0) + 8,
+      left: rect.left - (rootRect?.left ?? 0),
+    };
+  }, []);
 
   const handleExport = useCallback(() => {
     const result = chatStore.exportIncidentSummary();
@@ -478,8 +534,39 @@ export const SreChat = observer(() => {
     window.setTimeout(() => setExportNotice(null), 2400);
   }, []);
 
+  const handleRunbookExport = useCallback(() => {
+    const result = chatStore.exportRunbook();
+    setExportNotice(result.message);
+    window.setTimeout(() => setExportNotice(null), 2400);
+  }, []);
+
+  const toggleConnectionPanel = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    setConnectionAnchor(getAnchor(e.currentTarget));
+    setShowConnection((p) => !p);
+  }, [getAnchor]);
+
+  const toggleParamsPanel = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    setParamsAnchor(getAnchor(e.currentTarget));
+    setShowParams((p) => !p);
+  }, [getAnchor]);
+
+  const toggleStatsPanel = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    setStatsAnchor(getAnchor(e.currentTarget));
+    setShowStats((p) => !p);
+  }, [getAnchor]);
+
+  const toggleSourcesPanel = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    setSourcesAnchor(getAnchor(e.currentTarget));
+    setShowSources((p) => !p);
+  }, [getAnchor]);
+
+  const paramsPanelStyle = buildPanelStyle(paramsAnchor, 320, rootRef.current);
+  const connectionPanelStyle = buildPanelStyle(connectionAnchor, 320, rootRef.current);
+  const statsPanelStyle = buildPanelStyle(statsAnchor, 300, rootRef.current);
+  const sourcesPanelStyle = buildPanelStyle(sourcesAnchor, 320, rootRef.current);
+
   return (
-    <div style={S.root}>
+    <div style={S.root} ref={rootRef}>
       {/* inject keyframes */}
       <style dangerouslySetInnerHTML={{ __html: KEYFRAMES }} />
 
@@ -499,11 +586,11 @@ export const SreChat = observer(() => {
         <div style={S.headerActions}>
           <button
             style={{ ...S.badge(connected), border: "none", cursor: "pointer" }}
-            onClick={() => setShowConnection((p) => !p)}
+            onClick={toggleConnectionPanel}
             title="Ollama connection settings"
           >
             <span style={S.dot(connected)} />
-            {connected ? "Ollama" : "Disconnected"}
+            {connected ? `Ollama · ${endpointHost}` : "Disconnected"}
           </button>
           {connected && chatStore.availableModels.length > 0 ? (
             <select
@@ -536,7 +623,7 @@ export const SreChat = observer(() => {
           {connected && (
             <button
               style={{ ...S.btn, fontSize: "13px", padding: "3px 8px" }}
-              onClick={() => setShowParams((p) => !p)}
+              onClick={toggleParamsPanel}
               title="Model parameters"
             >
               ⚙️
@@ -551,7 +638,7 @@ export const SreChat = observer(() => {
                 color: "#a6e3a1",
                 borderColor: "rgba(166,227,161,.3)",
               }}
-              onClick={() => setShowStats((p) => !p)}
+              onClick={toggleStatsPanel}
               title="Last response performance stats"
             >
               ⚡ {chatStore.lastPerformanceStats.tokensPerSec} t/s
@@ -560,9 +647,12 @@ export const SreChat = observer(() => {
           <button style={S.btn} onClick={() => chatStore.refreshClusterContext()} disabled={chatStore.isGatheringContext}>
             🔄 {chatStore.isGatheringContext ? "Scanning…" : "Refresh"}
           </button>
-          <button style={S.btn} onClick={() => setShowSources((p) => !p)}>
+          <button style={S.btn} onClick={toggleSourcesPanel}>
             🧰 Sources
           </button>
+          {chatStore.hasMessages && (
+            <button style={S.btn} onClick={handleRunbookExport}>📚 Runbook</button>
+          )}
           {chatStore.hasMessages && (
             <button style={S.btn} onClick={handleExport}>📄 Export</button>
           )}
@@ -573,16 +663,16 @@ export const SreChat = observer(() => {
       </div>
 
       {/* ── Params panel (same context) ── */}
-      {showParams && <ModelParamsPanel onClose={() => setShowParams(false)} />}
+      {showParams && <ModelParamsPanel onClose={() => setShowParams(false)} panelStyle={paramsPanelStyle} />}
 
       {/* ── Connection panel (same context) ── */}
-      {showConnection && <ConnectionPanel onClose={() => setShowConnection(false)} />}
+      {showConnection && <ConnectionPanel onClose={() => setShowConnection(false)} panelStyle={connectionPanelStyle} />}
 
       {/* ── Performance stats panel ── */}
-      {showStats && <StatsPanel onClose={() => setShowStats(false)} />}
+      {showStats && <StatsPanel onClose={() => setShowStats(false)} panelStyle={statsPanelStyle} />}
 
       {/* ── Data source visibility panel ── */}
-      {showSources && <SourcesPanel onClose={() => setShowSources(false)} />}
+      {showSources && <SourcesPanel onClose={() => setShowSources(false)} panelStyle={sourcesPanelStyle} />}
 
       {/* ── Context bar ── */}
       {(ctx || chatStore.isGatheringContext) && (
@@ -696,7 +786,16 @@ export const SreChat = observer(() => {
                 <button
                   key={a}
                   style={S.quickActionBtn}
-                  onClick={() => { setInput(a); taRef.current?.focus(); }}
+                  onClick={() => {
+                    if (a.toLowerCase().includes("runbook")) {
+                      const result = chatStore.exportRunbook();
+                      setExportNotice(result.message);
+                      window.setTimeout(() => setExportNotice(null), 2400);
+                    } else {
+                      setInput(a);
+                      taRef.current?.focus();
+                    }
+                  }}
                 >
                   {a}
                 </button>
@@ -880,7 +979,7 @@ const MODEL_PARAMS_CONFIG: Array<{
   { key: "num_predict", label: "Max Tokens", desc: "Max response length (-1 = unlimited)", min: -1, max: 8192, step: 1, format: (v) => v === -1 ? "∞" : String(v) },
 ];
 
-const ModelParamsPanel = observer(({ onClose }: { onClose: () => void }) => {
+const ModelParamsPanel = observer(({ onClose, panelStyle }: { onClose: () => void; panelStyle: React.CSSProperties }) => {
   const params = chatStore.modelParams;
 
   const onChange = useCallback((key: keyof OllamaModelParams, raw: string) => {
@@ -896,7 +995,7 @@ const ModelParamsPanel = observer(({ onClose }: { onClose: () => void }) => {
     <>
       {/* click-away overlay */}
       <div style={pS.overlay} onClick={onClose} />
-      <div style={pS.panel}>
+      <div style={panelStyle}>
         <div style={pS.head}>
           <h4 style={pS.title}>⚙️ Model Parameters</h4>
           <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
@@ -928,7 +1027,7 @@ const ModelParamsPanel = observer(({ onClose }: { onClose: () => void }) => {
 });
 
 /* ── Connection panel (inline, same context) ── */
-const ConnectionPanel = observer(({ onClose }: { onClose: () => void }) => {
+const ConnectionPanel = observer(({ onClose, panelStyle }: { onClose: () => void; panelStyle: React.CSSProperties }) => {
   const [endpoint, setEndpoint] = useState(chatStore.ollamaEndpoint);
   const [testing, setTesting] = useState(false);
   const [debugInfo, setDebugInfo] = useState("");
@@ -988,7 +1087,7 @@ const ConnectionPanel = observer(({ onClose }: { onClose: () => void }) => {
   return (
     <>
       <div style={pS.overlay} onClick={onClose} />
-      <div style={{ ...pS.panel, left: "12px", right: "auto" }}>
+      <div style={panelStyle}>
         <div style={pS.head}>
           <h4 style={pS.title}>🔌 Ollama Connection</h4>
           <button style={pS.close} onClick={onClose}>✕</button>
@@ -1089,7 +1188,7 @@ const statHighlight = {
   color: "#a6e3a1",
 };
 
-const StatsPanel = observer(({ onClose }: { onClose: () => void }) => {
+const StatsPanel = observer(({ onClose, panelStyle }: { onClose: () => void; panelStyle: React.CSSProperties }) => {
   const stats = chatStore.lastPerformanceStats;
 
   if (!stats) return null;
@@ -1100,7 +1199,7 @@ const StatsPanel = observer(({ onClose }: { onClose: () => void }) => {
   return (
     <>
       <div style={pS.overlay} onClick={onClose} />
-      <div style={{ ...pS.panel, right: "80px", width: "300px" }}>
+      <div style={panelStyle}>
         <div style={pS.head}>
           <h4 style={pS.title}>⚡ Performance Stats</h4>
           <button style={pS.close} onClick={onClose}>✕</button>
@@ -1174,7 +1273,7 @@ const StatsPanel = observer(({ onClose }: { onClose: () => void }) => {
 });
 
 /* ── Data Sources panel ── */
-const SourcesPanel = observer(({ onClose }: { onClose: () => void }) => {
+const SourcesPanel = observer(({ onClose, panelStyle }: { onClose: () => void; panelStyle: React.CSSProperties }) => {
   const sources = chatStore.getDataSourceStatus();
 
   const colorFor = (status: "ready" | "partial" | "missing") => {
@@ -1186,7 +1285,7 @@ const SourcesPanel = observer(({ onClose }: { onClose: () => void }) => {
   return (
     <>
       <div style={pS.overlay} onClick={onClose} />
-      <div style={{ ...pS.panel, right: "12px", width: "320px" }}>
+      <div style={panelStyle}>
         <div style={pS.head}>
           <h4 style={pS.title}>🧰 SRE Data Sources</h4>
           <button style={pS.close} onClick={onClose}>✕</button>
