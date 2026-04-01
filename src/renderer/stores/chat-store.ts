@@ -15,6 +15,8 @@ import {
   BM25Retriever,
   SummaryManager,
   ContextBuilder,
+  ClusterMemoryService,
+  MEMORY_STALE_MS,
 } from "../services/context";
 
 const SETTINGS_KEY = "k8s-sre-assistant-settings";
@@ -25,7 +27,80 @@ interface PersistedSettings {
   autoRefreshContext: boolean;
   modelParams?: OllamaModelParams;
   selectedNamespace?: string;
+  selectedSreMode?: SreModeKey;
 }
+
+export type SreModeKey = "auto" | "troubleshoot" | "security" | "cost" | "capacity" | "yaml";
+
+const SESSION_KEY_PREFIX = "k8s-sre-assistant-session";
+
+const SRE_MODE_INSTRUCTIONS: Record<SreModeKey, string> = {
+  auto: "Auto mode: infer the best SRE workflow for the user request.",
+  troubleshoot: "Troubleshoot mode: prioritize root cause analysis, evidence, and verification steps.",
+  security: "Security review mode: prioritize RBAC, PodSecurity, NetworkPolicy, image and secret risks.",
+  cost: "Cost check mode: prioritize waste reduction, right-sizing, autoscaling and noisy workloads.",
+  capacity: "Capacity planning mode: prioritize saturation signals, scheduling pressure and scaling strategy.",
+  yaml: "YAML helper mode: prioritize precise Kubernetes manifests, patches and safe apply guidance.",
+};
+
+type QueryIntent = "write" | "investigate" | "explain" | "general";
+
+/**
+ * Classify the user's request into a response-format intent.
+ * - write:       user wants a YAML manifest, kubectl command, or patch → output directly
+ * - investigate: user is debugging an issue, asking why something broke → full SRE analysis
+ * - explain:     user wants a concept explained → clear prose, no structured sections
+ * - general:     everything else → concise direct answer
+ */
+function inferQueryIntent(input: string, sreMode: SreModeKey): QueryIntent {
+  // Explicit mode overrides
+  if (sreMode === "yaml") return "write";
+  if (sreMode === "troubleshoot") return "investigate";
+
+  const lower = input.toLowerCase();
+
+  // Write signals: user wants a manifest, command, or deployment
+  if (
+    /\b(write|create|generate|make|build|draft|produce|give\s+me|show\s+me)\b.{0,40}\b(yaml|manifest|deployment|service|configmap|ingress|secret|pvc|cronjob|job|namespace|daemonset|statefulset|hpa|pdb)\b/i.test(input) ||
+    /\b(yaml|manifest)\b/i.test(lower) ||
+    /\bwrite\s+a\b/i.test(lower) ||
+    /\b(deploy|install|add)\s+\w+/i.test(lower)
+  ) {
+    return "write";
+  }
+
+  // Investigate signals: debugging, incidents, anomalies
+  if (
+    /\b(why|crash|crashloop|oomkill|oom|error|fail|failing|broken|not\s+working|not\s+start|debug|troubleshoot|investigate|diagnose|issue|problem|incident|alert|spike|slow|latency|timeout|evict|pend|stuck|unhealthy)\b/i.test(lower) ||
+    sreMode === "security" || sreMode === "cost" || sreMode === "capacity"
+  ) {
+    return "investigate";
+  }
+
+  // Explain signals: conceptual questions
+  if (/\b(what\s+is|what\s+are|how\s+does|how\s+do|explain|describe|tell\s+me\s+about|difference\s+between|when\s+should)\b/i.test(lower)) {
+    return "explain";
+  }
+
+  return "general";
+}
+
+const SRE_INVESTIGATION_ROLES = [
+  "Investigator: extract facts, anomalies, and confidence levels from cluster data.",
+  "Explainer: translate technical findings into concise root-cause narratives.",
+  "Change Planner: sequence low-risk actions with validation and rollback checks.",
+].join("\n");
+
+const SRE_INVESTIGATION_CONTRACT = [
+  "Answer in this order:",
+  "1) Evidence — facts from cluster data",
+  "2) Correlation — link events, pods, deployments",
+  "3) Hypotheses — ranked by likelihood",
+  "4) Immediate checks — kubectl commands to confirm",
+  "5) Safest next actions",
+  "Only add YAML/Commands (section 6) if the user also asks to apply a fix.",
+  "Prefix any mutating command with RISK: low|medium|high.",
+].join("\n");
 
 export class ChatStore {
   messages: ChatMessage[] = [];
@@ -40,12 +115,14 @@ export class ChatStore {
   autoRefreshContext = true;
   modelParams: OllamaModelParams = { ...DEFAULT_MODEL_PARAMS };
   selectedNamespace = "__all__";
+  selectedSreMode: SreModeKey = "auto";
   availableNamespaces: string[] = [];
   lastPerformanceStats: OllamaPerformanceStats | null = null;
 
   private ollamaService: OllamaService;
   private chunkManager: ChunkManager;
   private summaryManager: SummaryManager;
+  private currentSessionKey = "";
   private static instance: ChatStore | null = null;
 
   static getInstance(): ChatStore {
@@ -69,6 +146,7 @@ export class ChatStore {
       autoRefreshContext: observable,
       modelParams: observable,
       selectedNamespace: observable,
+      selectedSreMode: observable,
       availableNamespaces: observable,
       lastPerformanceStats: observable,
       hasMessages: computed,
@@ -78,6 +156,7 @@ export class ChatStore {
       setAutoRefreshContext: action,
       setModelParams: action,
       setSelectedNamespace: action,
+      setSelectedSreMode: action,
       syncSettings: action,
       clearMessages: action,
       setError: action,
@@ -92,6 +171,11 @@ export class ChatStore {
     this.summaryManager = new SummaryManager();
     // Wire SummaryManager to call Ollama for compression
     this.summaryManager.setGenerateFn((prompt) => this.ollamaService.generateText(prompt));
+    this.currentSessionKey = this.buildSessionKey("unknown-cluster", this.selectedNamespace);
+    this.loadSessionMessages(this.currentSessionKey);
+    // Warm-start: load last memory snapshot so the UI shows data immediately
+    // without waiting for a K8s API scan (which may be slow on large clusters).
+    this.warmStartFromMemory();
 
     // Sync settings across contexts (preferences ↔ cluster page)
     try {
@@ -111,6 +195,7 @@ export class ChatStore {
         if (typeof s.autoRefreshContext === "boolean") this.autoRefreshContext = s.autoRefreshContext;
         if (s.modelParams) this.modelParams = { ...DEFAULT_MODEL_PARAMS, ...s.modelParams };
         if (s.selectedNamespace) this.selectedNamespace = s.selectedNamespace;
+        if (s.selectedSreMode) this.selectedSreMode = s.selectedSreMode;
       }
     } catch {
       // first run or corrupt data — use defaults
@@ -125,6 +210,7 @@ export class ChatStore {
         autoRefreshContext: this.autoRefreshContext,
         modelParams: this.modelParams,
         selectedNamespace: this.selectedNamespace,
+        selectedSreMode: this.selectedSreMode,
       };
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
     } catch {
@@ -155,9 +241,78 @@ export class ChatStore {
       if (s.modelParams) {
         this.modelParams = { ...DEFAULT_MODEL_PARAMS, ...s.modelParams };
       }
+      if (s.selectedSreMode) {
+        this.selectedSreMode = s.selectedSreMode;
+      }
     } catch {
       // ignore parse errors
     }
+  }
+
+  private buildSessionKey(clusterName: string, namespace: string): string {
+    const c = (clusterName || "unknown-cluster").replace(/\s+/g, "_").toLowerCase();
+    const ns = (namespace || "__all__").replace(/\s+/g, "_").toLowerCase();
+    return `${SESSION_KEY_PREFIX}:${c}:${ns}`;
+  }
+
+  private loadSessionMessages(sessionKey: string) {
+    try {
+      const raw = localStorage.getItem(sessionKey);
+      if (!raw) {
+        this.messages = [];
+        this.summaryManager.reset();
+        return;
+      }
+      const parsed: ChatMessage[] = JSON.parse(raw);
+      this.messages = Array.isArray(parsed)
+        ? parsed.map((m) => ({ ...m, isStreaming: false }))
+        : [];
+      this.summaryManager.reset();
+    } catch {
+      this.messages = [];
+      this.summaryManager.reset();
+    }
+  }
+
+  private persistSessionMessages() {
+    if (!this.currentSessionKey) return;
+    try {
+      localStorage.setItem(this.currentSessionKey, JSON.stringify(this.messages));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  private warmStartFromMemory() {
+    try {
+      // Try to find a usable snapshot for the saved namespace (cluster name unknown at startup)
+      const ns = this.selectedNamespace;
+      const snap = ClusterMemoryService.load("unknown-cluster", ns)
+        ?? ClusterMemoryService.load("unknown-cluster", "__all__");
+      if (snap) {
+        const full = ClusterMemoryService.toFullContext(snap);
+        runInAction(() => {
+          this.clusterContext = full;
+          if (full.namespaces.length > 0) this.availableNamespaces = full.namespaces;
+        });
+        const stale = ClusterMemoryService.isStale(snap);
+        console.log(
+          "[K8s SRE Memory] warm-start →",
+          `cluster=${snap.clusterName}`,
+          `pods=${full.pods.length}`,
+          `stale=${stale}`,
+        );
+      }
+    } catch (e: any) {
+      console.warn("[K8s SRE Memory] warm-start failed:", e?.message);
+    }
+  }
+
+  private switchSessionScope(clusterName?: string, namespace?: string) {
+    const key = this.buildSessionKey(clusterName || "unknown-cluster", namespace || "__all__");
+    if (key === this.currentSessionKey) return;
+    this.currentSessionKey = key;
+    this.loadSessionMessages(key);
   }
 
   private onStorageChange = (e: StorageEvent) => {
@@ -192,12 +347,18 @@ export class ChatStore {
     this.saveSettings();
   }
 
+  setSelectedSreMode(mode: SreModeKey) {
+    this.selectedSreMode = mode;
+    this.saveSettings();
+  }
+
   setModelParams(params: Partial<OllamaModelParams>) {
     this.modelParams = { ...this.modelParams, ...params };
     this.saveSettings();
   }
 
   async setSelectedNamespace(ns: string) {
+    this.persistSessionMessages();
     this.selectedNamespace = ns;
     this.saveSettings();
     // Immediately clear stale context so the UI doesn't show old data
@@ -212,10 +373,131 @@ export class ChatStore {
     this.messages = [];
     this.error = null;
     this.summaryManager.reset();
+    this.persistSessionMessages();
   }
 
   setError(error: string | null) {
     this.error = error;
+  }
+
+  /**
+   * Return a focused ClusterContext for the system prompt.
+   * If live context is available, filter it via ClusterMemoryService for the
+   * current query. Otherwise fall back to warm-start memory snapshot.
+   * This reduces prompt token cost significantly on large clusters.
+   */
+  private buildFocusedContext(query: string): ClusterContext | undefined {
+    const live = this.clusterContext;
+    if (!live) return undefined;
+
+    // If live context was already fetched from the API this session, filter it
+    const snap = ClusterMemoryService.load(
+      live.clusterName,
+      this.selectedNamespace,
+    );
+    if (!snap) {
+      // No persisted snapshot yet — build one from live context and use it filtered
+      ClusterMemoryService.save(live, this.selectedNamespace);
+      const freshSnap = ClusterMemoryService.load(live.clusterName, this.selectedNamespace);
+      if (freshSnap) return ClusterMemoryService.queryRelevant(freshSnap, query);
+      return live;
+    }
+
+    return ClusterMemoryService.queryRelevant(snap, query);
+  }
+
+  private buildCorrelatedSignalsBlock(): string {
+    const ctx = this.clusterContext;
+    if (!ctx) return "[CORRELATED SIGNALS]\nNo live cluster context available.";
+
+    const lines: string[] = [];
+    const warningEvents = ctx.events.filter((e) => (e.type || "").toLowerCase() === "warning");
+    const crashPods = ctx.pods.filter((p) => (p.status || "").toLowerCase().includes("crashloop"));
+    const replicaMismatch = ctx.deployments.filter((d) => {
+      const [ready, desired] = (d.replicas || "0/0").split("/").map((n) => Number(n));
+      return Number.isFinite(ready) && Number.isFinite(desired) && desired > ready;
+    });
+
+    const eventsByObject = new Map<string, number>();
+    for (const evt of warningEvents) {
+      const key = evt.involvedObject || "?/unknown";
+      eventsByObject.set(key, (eventsByObject.get(key) || 0) + 1);
+    }
+    const topObjects = [...eventsByObject.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    lines.push(`Warning events: ${warningEvents.length}`);
+    lines.push(`CrashLoop-like pods: ${crashPods.length}`);
+    lines.push(`Deployments with replica mismatch: ${replicaMismatch.length}`);
+    if (topObjects.length > 0) {
+      lines.push("Top warning-involved objects:");
+      for (const [obj, count] of topObjects) {
+        lines.push(`- ${obj}: ${count} events`);
+      }
+    }
+
+    const suspicious = [...warningEvents]
+      .slice(0, 8)
+      .map((e) => `- [${e.reason}] ${e.involvedObject}: ${e.message}`);
+    if (suspicious.length > 0) {
+      lines.push("Recent warning samples:");
+      lines.push(...suspicious);
+    }
+
+    return `[CORRELATED SIGNALS]\n${lines.join("\n")}`;
+  }
+
+  private buildSreWorkflowInstruction(userInput: string): { instruction: string; intent: QueryIntent } {
+    const intent = inferQueryIntent(userInput, this.selectedSreMode);
+
+    if (intent === "write") {
+      return {
+        intent,
+        instruction: [
+          "--- RESPONSE FORMAT: WRITE MODE ---",
+          "Output the YAML manifest or kubectl commands directly. No analysis preamble.",
+          "- One line at the top: RISK: low|medium|high — one sentence justification.",
+          "- Include one verification step (kubectl get / rollout status).",
+          "- Keep manifests minimal and production-safe (resource limits, probes where relevant).",
+          "- Do NOT output Evidence / Correlation / Hypotheses sections.",
+        ].join("\n"),
+      };
+    }
+
+    if (intent === "investigate") {
+      return {
+        intent,
+        instruction: [
+          "--- RESPONSE FORMAT: INVESTIGATION MODE ---",
+          SRE_INVESTIGATION_ROLES,
+          "",
+          SRE_INVESTIGATION_CONTRACT,
+        ].join("\n"),
+      };
+    }
+
+    if (intent === "explain") {
+      return {
+        intent,
+        instruction: [
+          "--- RESPONSE FORMAT: EXPLAIN MODE ---",
+          "Give a clear, direct explanation. Be concise.",
+          "Reference live cluster data only if directly relevant.",
+          "No Evidence / Hypotheses structure needed.",
+        ].join("\n"),
+      };
+    }
+
+    // general
+    return {
+      intent,
+      instruction: [
+        "--- RESPONSE FORMAT: DIRECT ---",
+        "Answer directly and concisely. Use cluster data if relevant.",
+        "No structured analysis sections needed.",
+      ].join("\n"),
+    };
   }
 
   async checkConnection() {
@@ -247,12 +529,15 @@ export class ChatStore {
     try {
       const ns = this.selectedNamespace === "__all__" ? undefined : this.selectedNamespace;
       const ctx = await K8sContextService.gatherContext(ns);
+      // Persist snapshot to memory so future sessions warm-start instantly
+      ClusterMemoryService.save(ctx, this.selectedNamespace);
       runInAction(() => {
         this.clusterContext = ctx;
         // Update available namespaces list
         if (ctx.namespaces.length > 0) {
           this.availableNamespaces = ctx.namespaces;
         }
+        this.switchSessionScope(ctx.clusterName, this.selectedNamespace);
       });
       console.log(
         "[K8s SRE] Cluster context refreshed →",
@@ -285,6 +570,7 @@ export class ChatStore {
       timestamp: Date.now(),
     };
     runInAction(() => { this.messages.push(userMessage); });
+    this.persistSessionMessages();
 
     // Auto-refresh context before each message if enabled
     if (this.autoRefreshContext) {
@@ -308,10 +594,28 @@ export class ChatStore {
     try {
       /* ── Context pipeline ── */
 
-      // 1. Build system prompt (SRE persona + live K8s data)
-      const systemPrompt = this.ollamaService.buildSystemPrompt(
-        this.clusterContext || undefined,
-      );
+      // 1. Build system prompt (SRE persona + focused K8s data)
+      //    Instead of dumping the entire cluster, use ClusterMemoryService to
+      //    select only resources relevant to the current query + all anomalies.
+      //    This keeps the context budget lean for small models.
+      const promptContext = this.buildFocusedContext(userMessage.content);
+      const baseSystemPrompt = this.ollamaService.buildSystemPrompt(promptContext);
+      const modeInstruction = SRE_MODE_INSTRUCTIONS[this.selectedSreMode];
+      const { instruction: workflowInstruction, intent } = this.buildSreWorkflowInstruction(userMessage.content);
+      // Correlated signals (Warning events, CrashLoop pods, replica mismatches) are
+      // only relevant for investigation. Skip them for write/explain/general to save tokens.
+      const correlatedSignals = intent === "investigate" ? this.buildCorrelatedSignalsBlock() : "";
+      const systemPromptParts = [
+        baseSystemPrompt,
+        "",
+        "--- ACTIVE SRE MODE ---",
+        modeInstruction,
+      ];
+      if (correlatedSignals) {
+        systemPromptParts.push("", correlatedSignals);
+      }
+      systemPromptParts.push("", workflowInstruction);
+      const systemPrompt = systemPromptParts.join("\n");
 
       // 2. Use existing summary (computed after previous response, not blocking)
       const summary = this.summaryManager.getSummary();
@@ -367,6 +671,7 @@ export class ChatStore {
           this.lastPerformanceStats = { ...this.ollamaService.lastStats };
         }
       });
+      this.persistSessionMessages();
 
       // 6. Post-response: compress old turns in background if threshold reached.
       //    Runs AFTER the response is delivered so it doesn't add latency.
@@ -389,6 +694,7 @@ export class ChatStore {
           };
         }
       });
+      this.persistSessionMessages();
     } finally {
       runInAction(() => { this.isLoading = false; });
     }
@@ -397,6 +703,233 @@ export class ChatStore {
   cancelStream() {
     this.ollamaService.cancelStream();
     this.isLoading = false;
+  }
+
+  getSuggestedActions(): string[] {
+    const actions = new Set<string>();
+    const ctx = this.clusterContext;
+    const lastUser = [...this.messages].reverse().find((m) => m.role === "user")?.content.toLowerCase() || "";
+
+    if (ctx) {
+      const warnings = ctx.events.filter((e) => e.type === "Warning").length;
+      if (warnings > 0) actions.add("Show top warning events and likely root causes");
+      if (ctx.pods.some((p) => (p.status || "").toLowerCase().includes("crashloop"))) {
+        actions.add("Investigate CrashLoopBackOff pods with prioritized fixes");
+      }
+      if (ctx.deployments.some((d) => {
+        const [ready, desired] = (d.replicas || "0/0").split("/").map((n) => Number(n));
+        return Number.isFinite(ready) && Number.isFinite(desired) && desired > ready;
+      })) {
+        actions.add("List deployments with replica mismatch and rollout checks");
+      }
+    }
+
+    if (this.selectedSreMode === "security" || lastUser.includes("security") || lastUser.includes("rbac")) {
+      actions.add("Run a quick RBAC and pod security posture review");
+    }
+    if (this.selectedSreMode === "cost" || lastUser.includes("cost") || lastUser.includes("resource")) {
+      actions.add("Suggest cost optimizations for over-provisioned workloads");
+    }
+    if (this.selectedSreMode === "yaml" || lastUser.includes("yaml") || lastUser.includes("manifest")) {
+      actions.add("Draft a safe YAML patch with explanation and dry-run command");
+    }
+
+    if (this.messages.length >= 4) {
+      actions.add("Generate an operations runbook from this investigation");
+    }
+
+    if (actions.size === 0) {
+      actions.add("Summarize cluster health and top risks right now");
+      actions.add("Recommend the next 3 troubleshooting steps");
+    }
+
+    return Array.from(actions).slice(0, 5);
+  }
+
+  getDataSourceStatus(): Array<{ name: string; status: "ready" | "partial" | "missing"; detail: string }> {
+    const c = this.clusterContext;
+
+    // Memory snapshot info
+    const snap = c
+      ? ClusterMemoryService.load(c.clusterName, this.selectedNamespace)
+      : null;
+    const memoryDetail = snap
+      ? `${ClusterMemoryService.isStale(snap) ? "⚠ stale " : ""}snapshot ${Math.round((Date.now() - snap.savedAt) / 60_000)}min ago · pods=${snap.pods.length}`
+      : "No snapshot yet";
+    const memoryStatus: "ready" | "partial" | "missing" = snap
+      ? (ClusterMemoryService.isStale(snap) ? "partial" : "ready")
+      : "missing";
+
+    if (!c) {
+      return [
+        { name: "Cluster Context", status: "missing", detail: "No context loaded yet" },
+        { name: "Cluster Memory", status: memoryStatus, detail: memoryDetail },
+        { name: "Conversation Memory", status: this.messages.length > 0 ? "partial" : "missing", detail: `${this.messages.length} messages` },
+      ];
+    }
+
+    const podDetail = c.totalPods != null && c.totalPods > c.pods.length
+      ? `${c.pods.length} relevant of ${c.totalPods} total`
+      : `${c.pods.length} loaded`;
+    const depDetail = c.totalDeployments != null && c.totalDeployments > c.deployments.length
+      ? `${c.deployments.length} relevant of ${c.totalDeployments} total`
+      : `${c.deployments.length} loaded`;
+
+    return [
+      { name: "Pods", status: c.pods.length > 0 ? "ready" : "missing", detail: podDetail },
+      { name: "Deployments", status: c.deployments.length > 0 ? "ready" : "missing", detail: depDetail },
+      { name: "Services", status: c.services.length > 0 ? "ready" : "missing", detail: `${c.services.length} loaded` },
+      { name: "Nodes", status: c.nodes.length > 0 ? "ready" : "missing", detail: `${c.nodes.length} loaded` },
+      { name: "Events", status: c.events.length > 0 ? "ready" : "missing", detail: `${c.events.length} loaded` },
+      {
+        name: "Event Correlation",
+        status: c.events.length >= 3 ? "ready" : c.events.length > 0 ? "partial" : "missing",
+        detail: c.events.length >= 3 ? "Multi-signal correlation active" : c.events.length > 0 ? "Sparse events" : "No event signals",
+      },
+      { name: "Cluster Memory", status: memoryStatus, detail: memoryDetail },
+      { name: "Conversation Memory", status: this.messages.length > 0 ? "ready" : "partial", detail: `${this.messages.length} messages` },
+    ];
+  }
+
+  buildIncidentSummaryMarkdown(): string {
+    const ctx = this.clusterContext;
+    const now = new Date().toISOString();
+    const warnings = ctx ? ctx.events.filter((e) => e.type === "Warning") : [];
+    const assistantMessages = this.messages.filter((m) => m.role === "assistant" && m.content.trim());
+    const lastAssistant = assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1].content : "No assistant response yet.";
+
+    return [
+      "# Incident Summary",
+      "",
+      `- Generated: ${now}`,
+      `- Cluster: ${ctx?.clusterName || "unknown"}`,
+      `- Namespace scope: ${this.selectedNamespace === "__all__" ? "all" : this.selectedNamespace}`,
+      `- Active mode: ${this.selectedSreMode}`,
+      "",
+      "## Context Snapshot",
+      "",
+      `- Pods: ${ctx?.pods.length ?? 0}`,
+      `- Deployments: ${ctx?.deployments.length ?? 0}`,
+      `- Services: ${ctx?.services.length ?? 0}`,
+      `- Nodes: ${ctx?.nodes.length ?? 0}`,
+      `- Warning events: ${warnings.length}`,
+      "",
+      "## Top Warning Events",
+      "",
+      ...(warnings.length > 0
+        ? warnings.slice(0, 10).map((w) => `- [${w.reason}] ${w.involvedObject}: ${w.message}`)
+        : ["- None detected"]),
+      "",
+      "## Assistant Latest Analysis",
+      "",
+      lastAssistant,
+      "",
+      "## Conversation Transcript",
+      "",
+      ...this.messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => `### ${m.role.toUpperCase()}\n\n${m.content}\n`),
+    ].join("\n");
+  }
+
+  exportIncidentSummary(): { ok: boolean; message: string } {
+    try {
+      const md = this.buildIncidentSummaryMarkdown();
+      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const cluster = (this.clusterContext?.clusterName || "cluster").replace(/\s+/g, "-").toLowerCase();
+      const ns = (this.selectedNamespace || "all").replace(/\s+/g, "-").toLowerCase();
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `incident-summary-${cluster}-${ns}-${ts}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return { ok: true, message: "Incident summary exported" };
+    } catch (e: any) {
+      return { ok: false, message: `Export failed: ${e?.message || "unknown error"}` };
+    }
+  }
+
+  buildRunbookMarkdown(): string {
+    const ctx = this.clusterContext;
+    const now = new Date().toISOString();
+    const warningEvents = ctx ? ctx.events.filter((e) => e.type === "Warning") : [];
+    const recentUserQuestions = this.messages
+      .filter((m) => m.role === "user")
+      .slice(-5)
+      .map((m) => `- ${m.content}`);
+    const latestAssistant = [...this.messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.content.trim())?.content || "No assistant analysis available.";
+
+    return [
+      "# SRE Operational Runbook",
+      "",
+      `- Generated: ${now}`,
+      `- Cluster: ${ctx?.clusterName || "unknown"}`,
+      `- Namespace scope: ${this.selectedNamespace === "__all__" ? "all" : this.selectedNamespace}`,
+      `- Active mode: ${this.selectedSreMode}`,
+      "",
+      "## Trigger and Scope",
+      "",
+      ...(recentUserQuestions.length > 0 ? recentUserQuestions : ["- No explicit trigger question found."]),
+      "",
+      "## Signals",
+      "",
+      `- Warning events: ${warningEvents.length}`,
+      `- Pods in view: ${ctx?.pods.length ?? 0}`,
+      `- Deployments in view: ${ctx?.deployments.length ?? 0}`,
+      "",
+      "## Triage Checklist",
+      "",
+      "- [ ] Confirm blast radius (namespaces, workloads, user impact)",
+      "- [ ] Verify top warning events and affected objects",
+      "- [ ] Check rollout/replica status for impacted deployments",
+      "- [ ] Validate pod/container state and recent restart patterns",
+      "- [ ] Capture evidence before any change",
+      "",
+      "## Candidate Actions (Read-First)",
+      "",
+      "- [ ] Run non-mutating checks first (describe/get/logs/events)",
+      "- [ ] Define rollback path before mutating actions",
+      "- [ ] Use dry-run for manifests/patches",
+      "",
+      "## Latest Assistant Analysis",
+      "",
+      latestAssistant,
+      "",
+      "## Verification",
+      "",
+      "- [ ] Confirm warning/event reduction after action",
+      "- [ ] Confirm workload availability and readiness",
+      "- [ ] Confirm no regression in adjacent services",
+      "",
+      "## Handoff Notes",
+      "",
+      "- Owner:",
+      "- Next checkpoint:",
+      "- Escalation criteria:",
+    ].join("\n");
+  }
+
+  exportRunbook(): { ok: boolean; message: string } {
+    try {
+      const md = this.buildRunbookMarkdown();
+      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const cluster = (this.clusterContext?.clusterName || "cluster").replace(/\s+/g, "-").toLowerCase();
+      const ns = (this.selectedNamespace || "all").replace(/\s+/g, "-").toLowerCase();
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `sre-runbook-${cluster}-${ns}-${ts}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return { ok: true, message: "Runbook exported" };
+    } catch (e: any) {
+      return { ok: false, message: `Runbook export failed: ${e?.message || "unknown error"}` };
+    }
   }
 }
 

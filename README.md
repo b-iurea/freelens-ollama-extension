@@ -37,12 +37,25 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 
 ### UI & Developer Experience
 - **🧠 In-Chat Model Selector** — Switch Ollama models directly from the chat header
+- **🎛️ Preset SRE Modes** — `Auto`, `Troubleshoot`, `Security`, `Cost`, `Capacity`, and `YAML` modes tune assistant behavior without changing model settings
+- **🧭 Suggested Actions** — Context-aware clickable follow-ups are shown above the input to accelerate investigation loops
+- **🧰 SRE Data Sources Panel** — Source visibility panel reports `ready/partial/missing` for cluster and memory signals
+- **💾 Scoped Session Persistence** — Chat history is persisted per `cluster + namespace` and restored automatically
+- **📄 Incident Summary Export** — Export full investigation history and findings as markdown
+- **📚 Runbook Export** — Generate and export a reusable operational runbook from the active session
+- **🎯 Object-Aware Prompt Entry** — Resource URL params (`kind/name/namespace/reason`) prefill a targeted investigation prompt
 - **⚡ Performance Stats** — After each response, see tokens/sec, prompt tokens, generation time, and model load time in a stats panel — compare models instantly
 - **📡 Context Bar** — Shows cluster name, selected namespace, pod/deployment counts, and warning count
 - **⚙️ In-Chat Model Parameters** — Tune temperature, top_p, top_k, repeat penalty, and max tokens
 - **🔌 In-Chat Connection Panel** — Configure endpoint, test connection via Node.js HTTP (no mixed-content issues)
 - **💾 Persistent Settings** — All settings saved to `localStorage` and synced across Freelens contexts
 - **⬅️ Back Navigation** — One-click return to the cluster dashboard
+
+### SRE-Native Agent Workflow
+- **🧩 Internal Specialist Roles** — The prompt orchestration now applies internal roles: `Investigator`, `Explainer`, `YAML Author`, and `Change Planner`
+- **🛡️ Read-First / Write-Later Contract** — Responses are structured as evidence-first analysis; mutation-oriented commands/manifests are gated until explicitly requested
+- **🔗 Correlated Signal Block** — Prompt includes correlation hints across warnings, CrashLoop patterns, and replica mismatches to improve RCA quality
+- **📝 Structured Response Contract** — Assistant is guided to produce consistent sections: Evidence, Correlation, Hypotheses, Immediate checks, and Safest next actions
 
 ### Network & Compatibility
 - **🔒 No Mixed-Content Issues** — All Ollama API calls use Node.js `http`/`https` modules instead of browser fetch/XHR, so connecting to plain HTTP Ollama instances from the Electron renderer works reliably
@@ -237,6 +250,41 @@ This prevents the "lost-in-the-middle" problem where small models forget informa
 - Anomalous resources (CrashLoopBackOff, replica mismatch, NotReady) survive truncation
 - Two-section summary preserves stable facts across rewrites
 - Token budget capped at ~2800 words to fit 4k-context models
+
+## 🗺️ Roadmap
+
+Inspired by ideas visible in the local [freelens-ai-extension](freelens-ai-extension/README.md) repo, but adapted to this extension's SRE-first identity.
+
+### Near-term improvements (completed)
+
+- ✅ **Preset SRE modes** — Implemented with dedicated `Auto/Troubleshoot/Security/Cost/Capacity/YAML` behavior instructions
+- ✅ **Suggested actions, not just answers** — Implemented as clickable context-aware follow-up actions in chat
+- ✅ **Object-aware entry points** — Implemented via URL param prefill (`kind/name/namespace/reason`)
+- ✅ **Tool visibility panel** — Implemented as the **SRE Data Sources** panel with health/status indicators
+- ✅ **Session persistence** — Implemented per `cluster + namespace` scope
+- ✅ **Export incident summary** — Implemented markdown export flow directly from chat
+
+### SRE-native agent workflow
+
+- ✅ **Specialized internal agents** — Implemented as internal prompt roles: **Investigator**, **Explainer**, **YAML Author**, **Change Planner**
+- ✅ **Read-first, write-later workflow** — Implemented response contract that prioritizes analysis before mutation guidance
+- ✅ **Runbook generation** — Implemented runbook markdown export from active investigation sessions
+- 🟡 **Event and log correlation** — Event correlation is implemented (warnings + anomaly cues); log correlation remains a planned next step
+
+### Integrations and power features
+
+- **MCP support for SRE workflows** — Borrow the MCP idea, but use it for clearly scoped integrations like GitHub issues, runbook repositories, incident systems, or external observability tools
+- **Prompt packs / response templates** — Add reusable output templates for postmortems, incident updates, security findings, migration plans, and RFC-style recommendations
+- **Model/provider profiles** — Offer ready-made profiles such as **Fast local triage**, **Balanced local**, and **Cloud deep analysis** instead of exposing only raw model parameters
+- **Cluster diff awareness** — Compare “before vs after” snapshots across refreshes to explain what changed during an investigation
+- **Safe action queue** — Queue generated kubectl commands or manifests for review before execution, with explicit risk labels and dry-run defaults
+
+### Longer-term product direction
+
+- **Namespace and workload memory** — Build compact per-namespace or per-workload memory so the assistant remembers recurring issues without bloating each prompt
+- **Incident timeline UI** — Visual timeline of warnings, restarts, rollout events, and assistant conclusions during a troubleshooting session
+- **Policy and config review** — Deep analysis for RBAC, NetworkPolicies, PodSecurity, probes, resources, and disruption budgets with explainable reasoning
+- **SRE cockpit experience** — Evolve from a chat tab into a guided operational workspace inside Freelens: investigate, explain, propose, review, export
 
 ## 🔧 Development
 

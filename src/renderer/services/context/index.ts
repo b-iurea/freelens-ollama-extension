@@ -14,3 +14,6 @@ export type { BM25Index } from "./bm25-retriever";
 export { SummaryManager } from "./summary-manager";
 export { ContextBuilder } from "./context-builder";
 export type { AssembledContext } from "./context-builder";
+export { ClusterMemoryService } from "./cluster-memory";
+export type { ClusterMemorySnapshot, ClusterAnomalies } from "./cluster-memory";
+export { MEMORY_STALE_MS } from "./cluster-memory";
