@@ -478,6 +478,12 @@ export const SreChat = observer(() => {
     window.setTimeout(() => setExportNotice(null), 2400);
   }, []);
 
+  const handleRunbookExport = useCallback(() => {
+    const result = chatStore.exportRunbook();
+    setExportNotice(result.message);
+    window.setTimeout(() => setExportNotice(null), 2400);
+  }, []);
+
   return (
     <div style={S.root}>
       {/* inject keyframes */}
@@ -563,6 +569,9 @@ export const SreChat = observer(() => {
           <button style={S.btn} onClick={() => setShowSources((p) => !p)}>
             🧰 Sources
           </button>
+          {chatStore.hasMessages && (
+            <button style={S.btn} onClick={handleRunbookExport}>📚 Runbook</button>
+          )}
           {chatStore.hasMessages && (
             <button style={S.btn} onClick={handleExport}>📄 Export</button>
           )}
@@ -696,7 +705,16 @@ export const SreChat = observer(() => {
                 <button
                   key={a}
                   style={S.quickActionBtn}
-                  onClick={() => { setInput(a); taRef.current?.focus(); }}
+                  onClick={() => {
+                    if (a.toLowerCase().includes("runbook")) {
+                      const result = chatStore.exportRunbook();
+                      setExportNotice(result.message);
+                      window.setTimeout(() => setExportNotice(null), 2400);
+                    } else {
+                      setInput(a);
+                      taRef.current?.focus();
+                    }
+                  }}
                 >
                   {a}
                 </button>
