@@ -25,6 +25,38 @@ export interface ClusterContext {
   services: K8sResourceSummary[];
   nodes: K8sResourceSummary[];
   events: K8sEventSummary[];
+  /**
+   * When ClusterMemoryService filters context for relevance, these carry
+   * the unfiltered totals so buildSystemPrompt can show "(N of M, relevant to query)".
+   */
+  totalPods?: number;
+  totalDeployments?: number;
+  totalServices?: number;
+  totalEvents?: number;
+  /** ISO timestamp of when this snapshot was originally saved to memory. */
+  snapshotAge?: number;
+  /**
+   * Cluster-wide health aggregate computed at snapshot time.
+   * Allows buildSystemPrompt to show a one-line summary like
+   * "170 Running · 7 Pending · 3 CrashLoopBackOff" without listing every pod.
+   */
+  podStatusCounts?: Record<string, number>;
+  deploymentHealthSummary?: { healthy: number; degraded: number };
+  /**
+   * Per-namespace health rollup computed at snapshot time.
+   * Gives the model a global view of the cluster (which namespaces have issues)
+   * at near-zero token cost (~10 tokens/namespace).
+   */
+  namespaceHealth?: Record<string, NamespaceHealthSummary>;
+}
+
+/** Health aggregate for a single namespace. */
+export interface NamespaceHealthSummary {
+  podStatusCounts: Record<string, number>;
+  totalPods: number;
+  totalDeployments: number;
+  degradedDeployments: number;
+  warningEvents: number;
 }
 
 export interface K8sResourceSummary {

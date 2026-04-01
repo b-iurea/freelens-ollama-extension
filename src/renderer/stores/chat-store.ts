@@ -15,6 +15,8 @@ import {
   BM25Retriever,
   SummaryManager,
   ContextBuilder,
+  ClusterMemoryService,
+  MEMORY_STALE_MS,
 } from "../services/context";
 
 const SETTINGS_KEY = "k8s-sre-assistant-settings";
@@ -41,22 +43,63 @@ const SRE_MODE_INSTRUCTIONS: Record<SreModeKey, string> = {
   yaml: "YAML helper mode: prioritize precise Kubernetes manifests, patches and safe apply guidance.",
 };
 
-const SRE_INTERNAL_ROLES = [
+type QueryIntent = "write" | "investigate" | "explain" | "general";
+
+/**
+ * Classify the user's request into a response-format intent.
+ * - write:       user wants a YAML manifest, kubectl command, or patch → output directly
+ * - investigate: user is debugging an issue, asking why something broke → full SRE analysis
+ * - explain:     user wants a concept explained → clear prose, no structured sections
+ * - general:     everything else → concise direct answer
+ */
+function inferQueryIntent(input: string, sreMode: SreModeKey): QueryIntent {
+  // Explicit mode overrides
+  if (sreMode === "yaml") return "write";
+  if (sreMode === "troubleshoot") return "investigate";
+
+  const lower = input.toLowerCase();
+
+  // Write signals: user wants a manifest, command, or deployment
+  if (
+    /\b(write|create|generate|make|build|draft|produce|give\s+me|show\s+me)\b.{0,40}\b(yaml|manifest|deployment|service|configmap|ingress|secret|pvc|cronjob|job|namespace|daemonset|statefulset|hpa|pdb)\b/i.test(input) ||
+    /\b(yaml|manifest)\b/i.test(lower) ||
+    /\bwrite\s+a\b/i.test(lower) ||
+    /\b(deploy|install|add)\s+\w+/i.test(lower)
+  ) {
+    return "write";
+  }
+
+  // Investigate signals: debugging, incidents, anomalies
+  if (
+    /\b(why|crash|crashloop|oomkill|oom|error|fail|failing|broken|not\s+working|not\s+start|debug|troubleshoot|investigate|diagnose|issue|problem|incident|alert|spike|slow|latency|timeout|evict|pend|stuck|unhealthy)\b/i.test(lower) ||
+    sreMode === "security" || sreMode === "cost" || sreMode === "capacity"
+  ) {
+    return "investigate";
+  }
+
+  // Explain signals: conceptual questions
+  if (/\b(what\s+is|what\s+are|how\s+does|how\s+do|explain|describe|tell\s+me\s+about|difference\s+between|when\s+should)\b/i.test(lower)) {
+    return "explain";
+  }
+
+  return "general";
+}
+
+const SRE_INVESTIGATION_ROLES = [
   "Investigator: extract facts, anomalies, and confidence levels from cluster data.",
   "Explainer: translate technical findings into concise root-cause narratives.",
-  "YAML Author: provide minimal, safe manifests/patches only when explicitly requested.",
   "Change Planner: sequence low-risk actions with validation and rollback checks.",
 ].join("\n");
 
-const SRE_RESPONSE_CONTRACT = [
-  "Always answer with this section order:",
-  "1) Evidence",
-  "2) Correlation",
-  "3) Hypotheses (ranked)",
-  "4) Immediate checks",
+const SRE_INVESTIGATION_CONTRACT = [
+  "Answer in this order:",
+  "1) Evidence — facts from cluster data",
+  "2) Correlation — link events, pods, deployments",
+  "3) Hypotheses — ranked by likelihood",
+  "4) Immediate checks — kubectl commands to confirm",
   "5) Safest next actions",
-  "Only include section 6) YAML/Commands when user explicitly asks to write/apply changes.",
-  "When proposing commands or YAML, prepend: RISK: low|medium|high and include a dry-run/verification step.",
+  "Only add YAML/Commands (section 6) if the user also asks to apply a fix.",
+  "Prefix any mutating command with RISK: low|medium|high.",
 ].join("\n");
 
 export class ChatStore {
@@ -130,6 +173,9 @@ export class ChatStore {
     this.summaryManager.setGenerateFn((prompt) => this.ollamaService.generateText(prompt));
     this.currentSessionKey = this.buildSessionKey("unknown-cluster", this.selectedNamespace);
     this.loadSessionMessages(this.currentSessionKey);
+    // Warm-start: load last memory snapshot so the UI shows data immediately
+    // without waiting for a K8s API scan (which may be slow on large clusters).
+    this.warmStartFromMemory();
 
     // Sync settings across contexts (preferences ↔ cluster page)
     try {
@@ -237,6 +283,31 @@ export class ChatStore {
     }
   }
 
+  private warmStartFromMemory() {
+    try {
+      // Try to find a usable snapshot for the saved namespace (cluster name unknown at startup)
+      const ns = this.selectedNamespace;
+      const snap = ClusterMemoryService.load("unknown-cluster", ns)
+        ?? ClusterMemoryService.load("unknown-cluster", "__all__");
+      if (snap) {
+        const full = ClusterMemoryService.toFullContext(snap);
+        runInAction(() => {
+          this.clusterContext = full;
+          if (full.namespaces.length > 0) this.availableNamespaces = full.namespaces;
+        });
+        const stale = ClusterMemoryService.isStale(snap);
+        console.log(
+          "[K8s SRE Memory] warm-start →",
+          `cluster=${snap.clusterName}`,
+          `pods=${full.pods.length}`,
+          `stale=${stale}`,
+        );
+      }
+    } catch (e: any) {
+      console.warn("[K8s SRE Memory] warm-start failed:", e?.message);
+    }
+  }
+
   private switchSessionScope(clusterName?: string, namespace?: string) {
     const key = this.buildSessionKey(clusterName || "unknown-cluster", namespace || "__all__");
     if (key === this.currentSessionKey) return;
@@ -309,6 +380,32 @@ export class ChatStore {
     this.error = error;
   }
 
+  /**
+   * Return a focused ClusterContext for the system prompt.
+   * If live context is available, filter it via ClusterMemoryService for the
+   * current query. Otherwise fall back to warm-start memory snapshot.
+   * This reduces prompt token cost significantly on large clusters.
+   */
+  private buildFocusedContext(query: string): ClusterContext | undefined {
+    const live = this.clusterContext;
+    if (!live) return undefined;
+
+    // If live context was already fetched from the API this session, filter it
+    const snap = ClusterMemoryService.load(
+      live.clusterName,
+      this.selectedNamespace,
+    );
+    if (!snap) {
+      // No persisted snapshot yet — build one from live context and use it filtered
+      ClusterMemoryService.save(live, this.selectedNamespace);
+      const freshSnap = ClusterMemoryService.load(live.clusterName, this.selectedNamespace);
+      if (freshSnap) return ClusterMemoryService.queryRelevant(freshSnap, query);
+      return live;
+    }
+
+    return ClusterMemoryService.queryRelevant(snap, query);
+  }
+
   private buildCorrelatedSignalsBlock(): string {
     const ctx = this.clusterContext;
     if (!ctx) return "[CORRELATED SIGNALS]\nNo live cluster context available.";
@@ -351,20 +448,56 @@ export class ChatStore {
     return `[CORRELATED SIGNALS]\n${lines.join("\n")}`;
   }
 
-  private buildSreWorkflowInstruction(userInput: string): string {
-    const wantsMutation = /\b(apply|patch|yaml|manifest|kubectl|delete|edit|rollout|scale|write)\b/i.test(userInput);
-    const writeGate = wantsMutation
-      ? "User requested mutation-oriented output: include YAML/Commands section with minimal blast-radius."
-      : "Read-first mode: do not provide mutating commands or YAML unless user asks explicitly.";
+  private buildSreWorkflowInstruction(userInput: string): { instruction: string; intent: QueryIntent } {
+    const intent = inferQueryIntent(userInput, this.selectedSreMode);
 
-    return [
-      "--- SRE WORKFLOW CONTRACT ---",
-      SRE_INTERNAL_ROLES,
-      "",
-      SRE_RESPONSE_CONTRACT,
-      "",
-      writeGate,
-    ].join("\n");
+    if (intent === "write") {
+      return {
+        intent,
+        instruction: [
+          "--- RESPONSE FORMAT: WRITE MODE ---",
+          "Output the YAML manifest or kubectl commands directly. No analysis preamble.",
+          "- One line at the top: RISK: low|medium|high — one sentence justification.",
+          "- Include one verification step (kubectl get / rollout status).",
+          "- Keep manifests minimal and production-safe (resource limits, probes where relevant).",
+          "- Do NOT output Evidence / Correlation / Hypotheses sections.",
+        ].join("\n"),
+      };
+    }
+
+    if (intent === "investigate") {
+      return {
+        intent,
+        instruction: [
+          "--- RESPONSE FORMAT: INVESTIGATION MODE ---",
+          SRE_INVESTIGATION_ROLES,
+          "",
+          SRE_INVESTIGATION_CONTRACT,
+        ].join("\n"),
+      };
+    }
+
+    if (intent === "explain") {
+      return {
+        intent,
+        instruction: [
+          "--- RESPONSE FORMAT: EXPLAIN MODE ---",
+          "Give a clear, direct explanation. Be concise.",
+          "Reference live cluster data only if directly relevant.",
+          "No Evidence / Hypotheses structure needed.",
+        ].join("\n"),
+      };
+    }
+
+    // general
+    return {
+      intent,
+      instruction: [
+        "--- RESPONSE FORMAT: DIRECT ---",
+        "Answer directly and concisely. Use cluster data if relevant.",
+        "No structured analysis sections needed.",
+      ].join("\n"),
+    };
   }
 
   async checkConnection() {
@@ -396,6 +529,8 @@ export class ChatStore {
     try {
       const ns = this.selectedNamespace === "__all__" ? undefined : this.selectedNamespace;
       const ctx = await K8sContextService.gatherContext(ns);
+      // Persist snapshot to memory so future sessions warm-start instantly
+      ClusterMemoryService.save(ctx, this.selectedNamespace);
       runInAction(() => {
         this.clusterContext = ctx;
         // Update available namespaces list
@@ -459,23 +594,28 @@ export class ChatStore {
     try {
       /* ── Context pipeline ── */
 
-      // 1. Build system prompt (SRE persona + live K8s data)
-      const baseSystemPrompt = this.ollamaService.buildSystemPrompt(
-        this.clusterContext || undefined,
-      );
+      // 1. Build system prompt (SRE persona + focused K8s data)
+      //    Instead of dumping the entire cluster, use ClusterMemoryService to
+      //    select only resources relevant to the current query + all anomalies.
+      //    This keeps the context budget lean for small models.
+      const promptContext = this.buildFocusedContext(userMessage.content);
+      const baseSystemPrompt = this.ollamaService.buildSystemPrompt(promptContext);
       const modeInstruction = SRE_MODE_INSTRUCTIONS[this.selectedSreMode];
-      const correlatedSignals = this.buildCorrelatedSignalsBlock();
-      const workflowInstruction = this.buildSreWorkflowInstruction(userMessage.content);
-      const systemPrompt = [
+      const { instruction: workflowInstruction, intent } = this.buildSreWorkflowInstruction(userMessage.content);
+      // Correlated signals (Warning events, CrashLoop pods, replica mismatches) are
+      // only relevant for investigation. Skip them for write/explain/general to save tokens.
+      const correlatedSignals = intent === "investigate" ? this.buildCorrelatedSignalsBlock() : "";
+      const systemPromptParts = [
         baseSystemPrompt,
         "",
         "--- ACTIVE SRE MODE ---",
         modeInstruction,
-        "",
-        correlatedSignals,
-        "",
-        workflowInstruction,
-      ].join("\n");
+      ];
+      if (correlatedSignals) {
+        systemPromptParts.push("", correlatedSignals);
+      }
+      systemPromptParts.push("", workflowInstruction);
+      const systemPrompt = systemPromptParts.join("\n");
 
       // 2. Use existing summary (computed after previous response, not blocking)
       const summary = this.summaryManager.getSummary();
@@ -608,16 +748,36 @@ export class ChatStore {
 
   getDataSourceStatus(): Array<{ name: string; status: "ready" | "partial" | "missing"; detail: string }> {
     const c = this.clusterContext;
+
+    // Memory snapshot info
+    const snap = c
+      ? ClusterMemoryService.load(c.clusterName, this.selectedNamespace)
+      : null;
+    const memoryDetail = snap
+      ? `${ClusterMemoryService.isStale(snap) ? "⚠ stale " : ""}snapshot ${Math.round((Date.now() - snap.savedAt) / 60_000)}min ago · pods=${snap.pods.length}`
+      : "No snapshot yet";
+    const memoryStatus: "ready" | "partial" | "missing" = snap
+      ? (ClusterMemoryService.isStale(snap) ? "partial" : "ready")
+      : "missing";
+
     if (!c) {
       return [
         { name: "Cluster Context", status: "missing", detail: "No context loaded yet" },
+        { name: "Cluster Memory", status: memoryStatus, detail: memoryDetail },
         { name: "Conversation Memory", status: this.messages.length > 0 ? "partial" : "missing", detail: `${this.messages.length} messages` },
       ];
     }
 
+    const podDetail = c.totalPods != null && c.totalPods > c.pods.length
+      ? `${c.pods.length} relevant of ${c.totalPods} total`
+      : `${c.pods.length} loaded`;
+    const depDetail = c.totalDeployments != null && c.totalDeployments > c.deployments.length
+      ? `${c.deployments.length} relevant of ${c.totalDeployments} total`
+      : `${c.deployments.length} loaded`;
+
     return [
-      { name: "Pods", status: c.pods.length > 0 ? "ready" : "missing", detail: `${c.pods.length} loaded` },
-      { name: "Deployments", status: c.deployments.length > 0 ? "ready" : "missing", detail: `${c.deployments.length} loaded` },
+      { name: "Pods", status: c.pods.length > 0 ? "ready" : "missing", detail: podDetail },
+      { name: "Deployments", status: c.deployments.length > 0 ? "ready" : "missing", detail: depDetail },
       { name: "Services", status: c.services.length > 0 ? "ready" : "missing", detail: `${c.services.length} loaded` },
       { name: "Nodes", status: c.nodes.length > 0 ? "ready" : "missing", detail: `${c.nodes.length} loaded` },
       { name: "Events", status: c.events.length > 0 ? "ready" : "missing", detail: `${c.events.length} loaded` },
@@ -626,6 +786,7 @@ export class ChatStore {
         status: c.events.length >= 3 ? "ready" : c.events.length > 0 ? "partial" : "missing",
         detail: c.events.length >= 3 ? "Multi-signal correlation active" : c.events.length > 0 ? "Sparse events" : "No event signals",
       },
+      { name: "Cluster Memory", status: memoryStatus, detail: memoryDetail },
       { name: "Conversation Memory", status: this.messages.length > 0 ? "ready" : "partial", detail: `${this.messages.length} messages` },
     ];
   }

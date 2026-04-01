@@ -233,6 +233,8 @@ export class OllamaService {
   /**
    * Build system prompt with Kubernetes cluster context.
    * Optimised for small models: concise, structured, low token count.
+   * When clusterContext carries totalXxx fields, the context was filtered
+   * by ClusterMemoryService and we annotate with "(N of M, query-relevant)".
    */
   buildSystemPrompt(clusterContext?: ClusterContext): string {
     let prompt = `You are an expert Kubernetes SRE assistant embedded in Freelens (a K8s IDE).
@@ -249,12 +251,41 @@ RULES:
 
     if (clusterContext) {
       const scope = clusterContext.namespace;
-      prompt += `\n--- LIVE CLUSTER CONTEXT ---\n`;
+      const isFiltered = clusterContext.totalPods != null;
+      const qualifier = isFiltered ? ", most relevant to query + all anomalies" : "";
+
+      prompt += `\n--- LIVE CLUSTER CONTEXT${isFiltered ? " (query-filtered)" : ""} ---\n`;
       prompt += `Cluster: ${clusterContext.clusterName}\n`;
       prompt += `Scope: ${scope}\n`;
 
-      // Namespaces (compact list)
-      if (clusterContext.namespaces.length > 0) {
+      if (isFiltered && clusterContext.snapshotAge) {
+        const ageMin = Math.round((Date.now() - clusterContext.snapshotAge) / 60_000);
+        prompt += `Snapshot age: ${ageMin}min\n`;
+      }
+
+      // Namespaces (compact list — replaced by namespace health rollup when available)
+      if (clusterContext.namespaceHealth && Object.keys(clusterContext.namespaceHealth).length > 0) {
+        const nsEntries = Object.entries(clusterContext.namespaceHealth)
+          .sort(([, a], [, b]) => {
+            // Sort: namespaces with issues first
+            const aScore = (b.degradedDeployments > 0 ? 2 : 0) + (b.warningEvents > 0 ? 1 : 0);
+            const bScore = (a.degradedDeployments > 0 ? 2 : 0) + (a.warningEvents > 0 ? 1 : 0);
+            return aScore - bScore;
+          });
+        prompt += `\nNAMESPACE OVERVIEW (${nsEntries.length}):\n`;
+        for (const [ns, health] of nsEntries) {
+          // Pod status line: "12 Running · 2 Pending · 1 CrashLoopBackOff"
+          const podParts = Object.entries(health.podStatusCounts)
+            .sort(([a], [b]) => (a === "Running" ? -1 : b === "Running" ? 1 : a.localeCompare(b)))
+            .map(([s, c]) => `${c} ${s}`)
+            .join(" · ");
+          const depPart = health.totalDeployments > 0
+            ? `  ${health.totalDeployments} deps${health.degradedDeployments > 0 ? ` (${health.degradedDeployments} degraded ⚠)` : ""}`
+            : "";
+          const evtPart = health.warningEvents > 0 ? `  ${health.warningEvents} warnings ⚠` : "";
+          prompt += `  ${ns}: ${podParts || "0 pods"}${depPart}${evtPart}\n`;
+        }
+      } else if (clusterContext.namespaces.length > 0) {
         prompt += `Namespaces (${clusterContext.namespaces.length}): ${clusterContext.namespaces.join(", ")}\n`;
       }
 
@@ -278,37 +309,77 @@ RULES:
       };
 
       // Pods
-      if (clusterContext.pods.length > 0) {
-        const byNs = groupByNs(clusterContext.pods);
-        prompt += `\nPODS (${clusterContext.pods.length}):\n`;
-        for (const [ns, pods] of byNs) {
-          prompt += `  [${ns}]\n`;
-          for (const p of pods) {
-            prompt += `    ${p.name}  ${p.status || "?"}  ready=${p.ready || "?"}\n`;
+      if (clusterContext.pods.length > 0 || clusterContext.totalPods != null) {
+        const total = clusterContext.totalPods ?? clusterContext.pods.length;
+        const shown = clusterContext.pods.length;
+        const isSubset = clusterContext.totalPods != null && clusterContext.totalPods > shown;
+
+        // One-line health aggregate (e.g. "170 Running · 7 Pending · 3 CrashLoopBackOff")
+        let healthLine = "";
+        if (clusterContext.podStatusCounts) {
+          const parts = Object.entries(clusterContext.podStatusCounts)
+            .sort(([a], [b]) => (a === "Running" ? -1 : b === "Running" ? 1 : a.localeCompare(b)))
+            .map(([status, count]) => `${count} ${status}`)
+            .join(" · ");
+          healthLine = ` — ${parts}`;
+        }
+
+        const shownLabel = isSubset ? `${shown} shown of ${total}${qualifier}` : `${total}`;
+        prompt += `\nPODS (${shownLabel}${healthLine}):\n`;
+
+        if (clusterContext.pods.length > 0) {
+          const byNs = groupByNs(clusterContext.pods);
+          for (const [ns, pods] of byNs) {
+            prompt += `  [${ns}]\n`;
+            for (const p of pods) {
+              prompt += `    ${p.name}  ${p.status || "?"}  ready=${p.ready || "?"}\n`;
+            }
           }
         }
       }
 
       // Deployments
-      if (clusterContext.deployments.length > 0) {
-        const byNs = groupByNs(clusterContext.deployments);
-        prompt += `\nDEPLOYMENTS (${clusterContext.deployments.length}):\n`;
-        for (const [ns, deps] of byNs) {
-          prompt += `  [${ns}]\n`;
-          for (const d of deps) {
-            prompt += `    ${d.name}  replicas=${d.replicas || "?"}\n`;
+      if (clusterContext.deployments.length > 0 || clusterContext.totalDeployments != null) {
+        const total = clusterContext.totalDeployments ?? clusterContext.deployments.length;
+        const shown = clusterContext.deployments.length;
+        const isSubset = clusterContext.totalDeployments != null && clusterContext.totalDeployments > shown;
+
+        // Health aggregate (e.g. "105 healthy · 15 degraded")
+        let healthLine = "";
+        if (clusterContext.deploymentHealthSummary) {
+          const { healthy, degraded } = clusterContext.deploymentHealthSummary;
+          healthLine = ` — ${healthy} healthy · ${degraded} degraded`;
+        }
+
+        const shownLabel = isSubset ? `${shown} shown of ${total}${qualifier}` : `${total}`;
+        prompt += `\nDEPLOYMENTS (${shownLabel}${healthLine}):\n`;
+
+        if (clusterContext.deployments.length > 0) {
+          const byNs = groupByNs(clusterContext.deployments);
+          for (const [ns, deps] of byNs) {
+            prompt += `  [${ns}]\n`;
+            for (const d of deps) {
+              prompt += `    ${d.name}  replicas=${d.replicas || "?"}\n`;
+            }
           }
         }
       }
 
       // Services
-      if (clusterContext.services.length > 0) {
-        const byNs = groupByNs(clusterContext.services);
-        prompt += `\nSERVICES (${clusterContext.services.length}):\n`;
-        for (const [ns, svcs] of byNs) {
-          prompt += `  [${ns}]\n`;
-          for (const s of svcs) {
-            prompt += `    ${s.name}  type=${s.status || "ClusterIP"}\n`;
+      if (clusterContext.services.length > 0 || clusterContext.totalServices != null) {
+        const total = clusterContext.totalServices ?? clusterContext.services.length;
+        const shown = clusterContext.services.length;
+        const isSubset = clusterContext.totalServices != null && clusterContext.totalServices > shown;
+        const shownLabel = isSubset ? `${shown} shown of ${total}${qualifier}` : `${total}`;
+        prompt += `\nSERVICES (${shownLabel}):\n`;
+
+        if (clusterContext.services.length > 0) {
+          const byNs = groupByNs(clusterContext.services);
+          for (const [ns, svcs] of byNs) {
+            prompt += `  [${ns}]\n`;
+            for (const s of svcs) {
+              prompt += `    ${s.name}  type=${s.status || "ClusterIP"}\n`;
+            }
           }
         }
       }
@@ -317,7 +388,10 @@ RULES:
       if (clusterContext.events.length > 0) {
         const warnings = clusterContext.events.filter(e => e.type === "Warning");
         const normals = clusterContext.events.filter(e => e.type !== "Warning");
-        prompt += `\nEVENTS (${clusterContext.events.length}, ${warnings.length} warnings):\n`;
+        const evtLabel = clusterContext.totalEvents != null && clusterContext.totalEvents > clusterContext.events.length
+          ? `${clusterContext.events.length} of ${clusterContext.totalEvents}${qualifier}`
+          : `${clusterContext.events.length}`;
+        prompt += `\nEVENTS (${evtLabel}, ${warnings.length} warnings):\n`;
         if (warnings.length > 0) {
           prompt += `  ⚠ WARNINGS:\n`;
           for (const e of warnings) {
