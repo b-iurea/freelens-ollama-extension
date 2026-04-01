@@ -3,6 +3,7 @@
 A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability Engineer)** assistant tab to your cluster view. Chat with an Ollama-powered AI model that can see your cluster's resources and help you troubleshoot, optimize, and manage your Kubernetes infrastructure.
 
 ![K8s SRE Assistant](https://img.shields.io/badge/Freelens-Extension-blue)
+![Version](https://img.shields.io/badge/version-0.2.0-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 📸 Screenshots
@@ -35,6 +36,21 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 - **🚨 Anomaly-First Sorting** — Pods in CrashLoopBackOff/Error/OOMKilled, deployments with replica mismatch, and NotReady nodes are sorted to the top *before* truncation, so the AI always sees the most actionable resources
 - **🧹 Clean Data** — `managedFields`, long annotations, `pod-template-hash`, and other noisy K8s metadata are stripped before passing to the model
 
+### Cluster Memory (v0.2.0)
+- **💾 Persistent Cluster Snapshot** — Cluster state is saved to `localStorage` after every refresh. On Freelens restart the assistant warm-starts instantly — no waiting for a K8s API scan
+- **🗺️ Namespace Health Rollup** — Every prompt includes a compact per-namespace overview (`prod-api: 43 Running · 2 CrashLoop  12 deps (1 degraded ⚠)  3 warnings ⚠`) so the model has global cluster visibility at near-zero token cost (~10 tokens/namespace)
+- **🔍 Query-Relevant Filtering** — Instead of dumping all resources, each message injects only the pods/deployments/services most relevant to the current query (via BM25) plus all anomalous resources. The prompt shows `(15 shown of 180, most relevant + all anomalies)` so the model knows it's working with a subset
+- **📈 Health Aggregates** — System prompt includes cluster-wide and per-namespace status counts (`170 Running · 7 Pending · 3 CrashLoopBackOff`, `105 healthy · 15 degraded deployments`) computed at snapshot time — zero extra tokens per message
+- **🕐 Snapshot Age** — UI shows snapshot age in the Sources panel; stale snapshots (>30 min) are flagged. The snapshot is always used as a fallback even when stale
+
+### SRE-Native Agent Workflow (v0.2.0)
+- **🧭 Intent Detection** — Every query is automatically classified into one of four intents: `write` · `investigate` · `explain` · `general`
+- **📋 Format-per-Intent** — Response format adapts to the query: YAML requests get a direct manifest with a one-line RISK rating; debugging gets full Evidence → Correlation → Hypotheses → Checks → Actions; conceptual questions get clean prose
+- **🎭 SRE Mode Presets** — Six UI-selectable modes override intent detection: Auto · Troubleshoot · Security · Cost · Capacity · YAML
+- **⚡ Token-Aware Signals** — The Correlated Signals block (Warning events, CrashLoop pods, replica mismatches) is only injected for `investigate` queries — skipped entirely for write/explain/general to save tokens
+- **📖 Runbook Export** — Export the current investigation as a structured Markdown runbook
+- **📤 Session Export** — Export full chat session as Markdown
+
 ### UI & Developer Experience
 - **🧠 In-Chat Model Selector** — Switch Ollama models directly from the chat header
 - **🎛️ Preset SRE Modes** — `Auto`, `Troubleshoot`, `Security`, `Cost`, `Capacity`, and `YAML` modes tune assistant behavior without changing model settings
@@ -45,10 +61,13 @@ A Freelens extension that adds an AI-powered **Kubernetes SRE (Site Reliability 
 - **📚 Runbook Export** — Generate and export a reusable operational runbook from the active session
 - **🎯 Object-Aware Prompt Entry** — Resource URL params (`kind/name/namespace/reason`) prefill a targeted investigation prompt
 - **⚡ Performance Stats** — After each response, see tokens/sec, prompt tokens, generation time, and model load time in a stats panel — compare models instantly
-- **📡 Context Bar** — Shows cluster name, selected namespace, pod/deployment counts, and warning count
+- **📡 Context Bar** — Shows cluster name, selected namespace, pod/deployment counts, warning count, and SRE mode selector
 - **⚙️ In-Chat Model Parameters** — Tune temperature, top_p, top_k, repeat penalty, and max tokens
 - **🔌 In-Chat Connection Panel** — Configure endpoint, test connection via Node.js HTTP (no mixed-content issues)
-- **💾 Persistent Settings** — All settings saved to `localStorage` and synced across Freelens contexts
+- **📚 Sources Panel** — Shows what data was used: cluster snapshot age, pod/deployment relevance counts, warning events
+- **💡 Suggested Actions** — After each response, contextual follow-up suggestions are shown as quick-action chips
+- **💾 Session Persistence** — Chat history persists per cluster+namespace across Freelens restarts
+- **📌 Persistent Settings** — All settings saved to `localStorage` and synced across Freelens contexts
 - **⬅️ Back Navigation** — One-click return to the cluster dashboard
 
 ### SRE-Native Agent Workflow
@@ -83,11 +102,12 @@ ollama serve
 ### 2. Pull a Model
 
 ```bash
-# Recommended for SRE tasks
+# Recommended for SRE tasks — all work well with the v0.2.0 context pipeline
 ollama pull llama3.2        # General purpose, good balance (3B)
-ollama pull qwen3            # Fast, great for structured data (4B)
+ollama pull qwen2.5:7b      # Fast, great for structured data and YAML (7B)
 ollama pull mistral          # Capable all-rounder (7B)
-ollama pull deepseek-coder   # Excellent for YAML/config (6.7B)
+ollama pull gemma3:9b        # Strong reasoning, good on large clusters (9B)
+ollama pull phi4-mini        # Ultra-fast on CPU, good for quick queries (3.8B)
 ```
 
 ### 3. Install the Extension
@@ -136,7 +156,41 @@ Then in Freelens: **Extensions** → **Add Local Extension** → select the `.tg
 
 All primary configuration lives directly in the chat UI.
 
-#### 🔌 Connection Panel (Ollama badge)
+#### � Context Bar
+
+The context bar shows cluster name, selected namespace, pod/deployment counts, warning count, and the SRE mode selector. Click **Refresh** to force a new K8s API scan and update the cluster memory snapshot.
+
+#### 📚 Sources Panel (Sources button)
+
+Shows what data the assistant used for the last response:
+
+| Row | Description |
+|-----|-------------|
+| Cluster Memory | Snapshot age; flagged as stale if >30 min |
+| Pods | `N shown of M total` when query-filtered |
+| Deployments | Filtered count + degraded count |
+| Warning Events | Number of active warning events |
+
+#### 🎭 SRE Mode Selector
+
+Six presets control the assistant's response strategy:
+
+| Mode | Behaviour |
+|------|-----------|
+| Auto | Intent auto-detected from query text |
+| Troubleshoot | Full investigation format (Evidence → Correlation → Hypotheses → Checks → Actions) |
+| Security | Focuses on RBAC, PodSecurity, NetworkPolicy, image and secret risks |
+| Cost | Focuses on waste reduction, right-sizing, autoscaling |
+| Capacity | Focuses on saturation signals, scheduling pressure, scaling strategy |
+| YAML | Direct manifest output, no analysis preamble |
+
+In **Auto** mode, the intent is detected from the query:
+- *"write a nginx deployment"* → YAML format
+- *"why is my pod crashing?"* → Investigation format
+- *"what is a PodDisruptionBudget?"* → Explanation format
+- *"how many pods are running?"* → Direct answer
+
+#### �🔌 Connection Panel (Ollama badge)
 
 Click the **Ollama** / **Disconnected** badge to open the connection overlay:
 
@@ -201,7 +255,7 @@ src/
 ├── renderer/
 │   ├── index.tsx                         # Renderer entry (registers pages, menus, preferences)
 │   ├── components/
-│   │   ├── sre-chat.tsx                  # Chat UI + ConnectionPanel + ModelParamsPanel + StatsPanel
+│   │   ├── sre-chat.tsx                  # Chat UI + ConnectionPanel + ModelParamsPanel + StatsPanel + SourcesPanel
 │   │   └── markdown-renderer.tsx         # Streaming-safe block-level Markdown → HTML renderer
 │   ├── icons/
 │   │   └── sre-icon.tsx                  # Sidebar icon
@@ -210,16 +264,17 @@ src/
 │   ├── preferences/
 │   │   └── sre-preferences.tsx           # Freelens Preferences panel
 │   ├── services/
-│   │   ├── ollama-service.ts             # Ollama API (Node.js HTTP, streaming, stats capture)
+│   │   ├── ollama-service.ts             # Ollama API (Node.js HTTP, streaming, stats capture, system prompt builder)
 │   │   ├── k8s-context-service.ts        # K8s context via KubeApi.list() + namespace filtering
 │   │   └── context/                      # 🧩 Context management pipeline
 │   │       ├── index.ts                  #    Barrel export
 │   │       ├── chunk-manager.ts          #    Sliding-window chunker (~300 words, 50 overlap)
-│   │       ├── bm25-retriever.ts         #    Pure-TS BM25 (k1=1.5, b=0.75) keyword retrieval
+│   │       ├── bm25-retriever.ts         #    Pure-TS BM25 (k1=1.5, b=0.75) K8s-aware keyword retrieval
 │   │       ├── summary-manager.ts        #    On-demand Ollama-based conversation compression
-│   │       └── context-builder.ts        #    Assembles: system → summary → BM25 chunks → recent → query
+│   │       ├── context-builder.ts        #    Assembles: system → summary → BM25 chunks → recent → query
+│   │       └── cluster-memory.ts         #    Persistent snapshot + namespace rollup + BM25 query filtering
 │   └── stores/
-│       └── chat-store.ts                 # MobX state + context pipeline orchestration
+│       └── chat-store.ts                 # MobX state + context pipeline orchestration + intent detection
 └── common/
     └── types.ts                          # Shared TypeScript types
 ```
@@ -229,27 +284,34 @@ src/
 On every user message:
 
 ```
-1. Build system prompt (SRE persona + live K8s cluster data, anomalies sorted first)
-2. Use existing summary from previous cycle (non-blocking)
-3. ChunkManager.buildChunks()           → split NON-SUMMARISED history into ~300-word overlapping chunks
-4. BM25Retriever.retrieve(query, 5)     → top-5 keyword-relevant chunks (K8s-aware tokenizer)
-5. ContextBuilder.assemble()             → ordered: system + summary + chunks + recent turns + query
+1. inferQueryIntent(query)               → write | investigate | explain | general
+2. buildFocusedContext(query)            → ClusterMemoryService.queryRelevant()
+   └─ BM25 selects top-15 relevant pods/deps/svcs + all anomalous resources
+   └─ Namespace health rollup always included (~10 tokens/namespace)
+   └─ Cluster-wide status aggregates always included ("170 Running · 3 CrashLoop")
+3. buildSystemPrompt(focusedCtx)         → SRE persona + NAMESPACE OVERVIEW + filtered resources
+4. [investigate only] buildCorrelatedSignalsBlock() → warning events, crash pods, replica mismatches
+5. buildSreWorkflowInstruction(intent)   → format contract injected (skipped for write/explain/general)
+6. Use existing summary from previous cycle (non-blocking)
+7. ChunkManager.buildChunks()           → split NON-SUMMARISED history into ~300-word overlapping chunks
+8. BM25Retriever.retrieve(query, 5)     → top-5 keyword-relevant conversation chunks
+9. ContextBuilder.assemble()             → ordered: system + summary + chunks + recent turns + query
    └─ Jaccard deduplication removes chunks redundant with recent messages
-6. OllamaService.streamChatAssembled()   → stream response, capture performance stats
-7. (post-response) SummaryManager.maybeCompress()  → background: compress old turns if >20 pairs
-   └─ Two-section output: FACTS & DECISIONS (persistent) + ROLLING CONTEXT (query-focused)
+10. OllamaService.streamChatAssembled() → stream response, capture performance stats
+11. (post-response) SummaryManager.maybeCompress() → background: compress old turns if >20 pairs
+    └─ Two-section output: FACTS & DECISIONS (persistent) + ROLLING CONTEXT (query-focused)
+12. ClusterMemoryService.save(ctx)      → persist fresh snapshot after every K8s API refresh
 ```
-
-This prevents the "lost-in-the-middle" problem where small models forget information buried in long contexts.
 
 **Key properties:**
 - Zero npm dependencies for the pipeline — pure TypeScript
 - Summarisation runs *after* the response (no added latency)
 - BM25 retrieves only from non-summarised messages (no duplicate context)
 - K8s-aware tokenizer preserves compound terms (`kube-system`, `apps/v1`, IPs)
-- Anomalous resources (CrashLoopBackOff, replica mismatch, NotReady) survive truncation
-- Two-section summary preserves stable facts across rewrites
-- Token budget capped at ~2800 words to fit 4k-context models
+- Anomalous resources (CrashLoopBackOff, replica mismatch, NotReady) always survive filtering
+- Namespace health rollup gives global visibility at ~10 tokens/namespace
+- Intent detection adapts response format — YAML queries skip all analysis overhead
+- Token budget capped at ~2800 words conversation history + ~1000 tokens filtered cluster context
 
 ## 🗺️ Roadmap
 
@@ -302,7 +364,26 @@ pnpm build
 pnpm pack
 ```
 
-## 📄 License
+## � Changelog
+
+### v0.2.0
+- **Cluster Memory** — persistent `localStorage` snapshot with warm-start on Freelens restart
+- **Namespace Health Rollup** — per-namespace pod/deployment/event summary in every prompt at ~10 tokens/namespace
+- **Query-Relevant Filtering** — BM25-based selection of top-15 relevant resources + all anomalous resources per prompt
+- **Health Aggregates** — cluster-wide and per-namespace status counts (`170 Running · 3 CrashLoop`) computed at snapshot time
+- **Intent Detection** — queries classified as `write / investigate / explain / general` with format-per-intent responses
+- **SRE Mode Presets** — six UI-selectable modes (Auto · Troubleshoot · Security · Cost · Capacity · YAML)
+- **Token Savings** — Correlated Signals block skipped for non-investigate queries; ~85-90% reduction in cluster context tokens on large clusters
+- **Sources Panel** — snapshot age, filtered resource counts, warning events
+- **Suggested Actions** — contextual follow-up chips after each response
+- **Session Persistence** — chat history persists per cluster+namespace
+- **Runbook & Session Export** — export incidents as Markdown runbooks or full session logs
+- **Popup Anchor Fix** — all panels (Connection, Params, Stats, Sources) anchor correctly to their buttons
+
+### v0.1.0
+- Initial release: AI chat, cluster awareness, streaming responses, BM25 context pipeline, summarisation, anomaly-first sorting
+
+## �📄 License
 
 Copyright (c) 2026 biurea.
 
