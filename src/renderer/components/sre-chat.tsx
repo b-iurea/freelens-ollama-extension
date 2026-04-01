@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage, OllamaModelParams } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { ChatStore } from "../stores/chat-store";
+import { nodeRequestJson } from "../services/ollama-service";
 import { MarkdownRenderer } from "./markdown-renderer";
 
 const chatStore = ChatStore.getInstance();
@@ -763,44 +764,17 @@ const ConnectionPanel = observer(({ onClose }: { onClose: () => void }) => {
     const logs: string[] = [`Testing: ${url}`];
 
     try {
-      let data: any;
-      let method = "fetch";
+      logs.push("Using Node.js HTTP (bypasses mixed-content)…");
+      setDebugInfo(logs.join("\n"));
 
-      try {
-        logs.push("Trying fetch…");
-        setDebugInfo(logs.join("\n"));
-        const resp = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5000) });
-        logs.push(`fetch status: ${resp.status} ok: ${resp.ok}`);
-        setDebugInfo(logs.join("\n"));
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const text = await resp.text();
-        logs.push(`Body length: ${text.length}`);
-        setDebugInfo(logs.join("\n"));
-        data = JSON.parse(text);
-      } catch (fetchErr: any) {
-        logs.push(`fetch error: ${fetchErr.message}`);
-        logs.push("Trying XHR fallback…");
-        setDebugInfo(logs.join("\n"));
-        method = "XHR";
+      const result = await nodeRequestJson(url, 5000);
+      logs.push(`Response status: ${result.status} ok: ${result.ok}`);
+      setDebugInfo(logs.join("\n"));
 
-        data = await new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("GET", url, true);
-          xhr.timeout = 5000;
-          xhr.onload = () => {
-            logs.push(`XHR status: ${xhr.status}`);
-            setDebugInfo(logs.join("\n"));
-            try { resolve(JSON.parse(xhr.responseText)); }
-            catch { reject(new Error("JSON parse error")); }
-          };
-          xhr.onerror = () => { logs.push("XHR network error"); setDebugInfo(logs.join("\n")); reject(new Error("XHR network error")); };
-          xhr.ontimeout = () => { logs.push("XHR timeout"); setDebugInfo(logs.join("\n")); reject(new Error("XHR timeout")); };
-          xhr.send();
-        });
-      }
+      if (!result.ok) throw new Error(`HTTP ${result.status}`);
 
-      const modelList = data?.models || [];
-      logs.push(`✓ Connected via ${method}. Models: ${modelList.length}`);
+      const modelList = result.data?.models || [];
+      logs.push(`✓ Connected. Models: ${modelList.length}`);
       if (modelList.length > 0) {
         logs.push(modelList.map((m: any) => m.name).join(", "));
       } else {

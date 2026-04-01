@@ -213,8 +213,17 @@ export class ChatStore {
     try {
       const ctx = await K8sContextService.gatherContext();
       runInAction(() => { this.clusterContext = ctx; });
+      console.log(
+        "[K8s SRE] Cluster context refreshed →",
+        `pods=${ctx.pods.length}`,
+        `deployments=${ctx.deployments.length}`,
+        `services=${ctx.services.length}`,
+        `nodes=${ctx.nodes.length}`,
+        `events=${ctx.events.length}`,
+      );
     } catch (e: any) {
       console.warn("[K8s SRE] Failed to gather cluster context:", e);
+      // Keep previous context if available rather than wiping it
     } finally {
       runInAction(() => { this.isGatheringContext = false; });
     }
