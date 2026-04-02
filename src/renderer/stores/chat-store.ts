@@ -6,17 +6,20 @@
  */
 
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
-import type { ChatMessage, ClusterContext, OllamaModelInfo, OllamaModelParams, OllamaPerformanceStats } from "../../common/types";
+import type { ChatMessage, ClusterContext, FidelityReport, OllamaModelInfo, OllamaModelParams, OllamaPerformanceStats } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { K8sContextService } from "../services/k8s-context-service";
 import { OllamaService } from "../services/ollama-service";
+import { runFidelityEvaluation } from "../services/fidelity-evaluator";
 import {
   ChunkManager,
   BM25Retriever,
   SummaryManager,
   ContextBuilder,
   ClusterMemoryService,
-  MEMORY_STALE_MS,
+  compressForPrompt,
+  K8S_TOOLS,
+  executeK8sTool,
 } from "../services/context";
 
 const SETTINGS_KEY = "k8s-sre-assistant-settings";
@@ -96,9 +99,9 @@ const SRE_INVESTIGATION_CONTRACT = [
   "1) Evidence — facts from cluster data",
   "2) Correlation — link events, pods, deployments",
   "3) Hypotheses — ranked by likelihood",
-  "4) Immediate checks — kubectl commands to confirm",
+  "4) Root cause — most likely explanation based on evidence",
   "5) Safest next actions",
-  "Only add YAML/Commands (section 6) if the user also asks to apply a fix.",
+  "Only add kubectl commands or YAML (section 6) if the user EXPLICITLY asks for them.",
   "Prefix any mutating command with RISK: low|medium|high.",
 ].join("\n");
 
@@ -118,11 +121,15 @@ export class ChatStore {
   selectedSreMode: SreModeKey = "auto";
   availableNamespaces: string[] = [];
   lastPerformanceStats: OllamaPerformanceStats | null = null;
+  /** Latest fidelity evaluation result, null until first run. */
+  fidelityReport: FidelityReport | null = null;
+  isFidelityRunning = false;
 
   private ollamaService: OllamaService;
   private chunkManager: ChunkManager;
   private summaryManager: SummaryManager;
   private currentSessionKey = "";
+  private autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private static instance: ChatStore | null = null;
 
   static getInstance(): ChatStore {
@@ -149,6 +156,8 @@ export class ChatStore {
       selectedSreMode: observable,
       availableNamespaces: observable,
       lastPerformanceStats: observable,
+      fidelityReport: observable,
+      isFidelityRunning: observable,
       hasMessages: computed,
       lastMessage: computed,
       setEndpoint: action,
@@ -163,6 +172,7 @@ export class ChatStore {
       checkConnection: action,
       refreshClusterContext: action,
       sendMessage: action,
+      runFidelityEvaluation: action,
     });
 
     this.loadSettings();
@@ -173,9 +183,11 @@ export class ChatStore {
     this.summaryManager.setGenerateFn((prompt) => this.ollamaService.generateText(prompt));
     this.currentSessionKey = this.buildSessionKey("unknown-cluster", this.selectedNamespace);
     this.loadSessionMessages(this.currentSessionKey);
-    // Warm-start: load last memory snapshot so the UI shows data immediately
-    // without waiting for a K8s API scan (which may be slow on large clusters).
+    // Warm-start: restore namespace list so selector shows options immediately.
+    // clusterContext is intentionally NOT seeded from localStorage — always fetch live.
     this.warmStartFromMemory();
+    // Background context refresh every 5 minutes.
+    this.startAutoRefreshTimer();
 
     // Sync settings across contexts (preferences ↔ cluster page)
     try {
@@ -285,27 +297,34 @@ export class ChatStore {
 
   private warmStartFromMemory() {
     try {
-      // Try to find a usable snapshot for the saved namespace (cluster name unknown at startup)
+      // Restore only the namespace list so the selector shows options immediately.
+      // Do NOT seed clusterContext with stale snapshot data — always fetch live.
       const ns = this.selectedNamespace;
       const snap = ClusterMemoryService.load("unknown-cluster", ns)
         ?? ClusterMemoryService.load("unknown-cluster", "__all__");
-      if (snap) {
-        const full = ClusterMemoryService.toFullContext(snap);
+      if (snap && snap.namespaces.length > 0) {
         runInAction(() => {
-          this.clusterContext = full;
-          if (full.namespaces.length > 0) this.availableNamespaces = full.namespaces;
+          this.availableNamespaces = snap.namespaces;
         });
-        const stale = ClusterMemoryService.isStale(snap);
-        console.log(
-          "[K8s SRE Memory] warm-start →",
-          `cluster=${snap.clusterName}`,
-          `pods=${full.pods.length}`,
-          `stale=${stale}`,
-        );
+        console.log("[K8s SRE Memory] warm-start: restored", snap.namespaces.length, "namespaces");
       }
     } catch (e: any) {
       console.warn("[K8s SRE Memory] warm-start failed:", e?.message);
     }
+  }
+
+  private startAutoRefreshTimer() {
+    if (this.autoRefreshTimer) clearInterval(this.autoRefreshTimer);
+    // Silently refresh cluster context every 5 minutes so the model always
+    // sees reasonably fresh data even between manual refreshes.
+    this.autoRefreshTimer = setInterval(() => {
+      if (!this.isGatheringContext && !this.isLoading) {
+        console.log("[K8s SRE] Background context refresh");
+        this.refreshClusterContext().catch((e: any) => {
+          console.warn("[K8s SRE] Background refresh failed:", e?.message);
+        });
+      }
+    }, 5 * 60 * 1000);
   }
 
   private switchSessionScope(clusterName?: string, namespace?: string) {
@@ -378,74 +397,6 @@ export class ChatStore {
 
   setError(error: string | null) {
     this.error = error;
-  }
-
-  /**
-   * Return a focused ClusterContext for the system prompt.
-   * If live context is available, filter it via ClusterMemoryService for the
-   * current query. Otherwise fall back to warm-start memory snapshot.
-   * This reduces prompt token cost significantly on large clusters.
-   */
-  private buildFocusedContext(query: string): ClusterContext | undefined {
-    const live = this.clusterContext;
-    if (!live) return undefined;
-
-    // If live context was already fetched from the API this session, filter it
-    const snap = ClusterMemoryService.load(
-      live.clusterName,
-      this.selectedNamespace,
-    );
-    if (!snap) {
-      // No persisted snapshot yet — build one from live context and use it filtered
-      ClusterMemoryService.save(live, this.selectedNamespace);
-      const freshSnap = ClusterMemoryService.load(live.clusterName, this.selectedNamespace);
-      if (freshSnap) return ClusterMemoryService.queryRelevant(freshSnap, query);
-      return live;
-    }
-
-    return ClusterMemoryService.queryRelevant(snap, query);
-  }
-
-  private buildCorrelatedSignalsBlock(): string {
-    const ctx = this.clusterContext;
-    if (!ctx) return "[CORRELATED SIGNALS]\nNo live cluster context available.";
-
-    const lines: string[] = [];
-    const warningEvents = ctx.events.filter((e) => (e.type || "").toLowerCase() === "warning");
-    const crashPods = ctx.pods.filter((p) => (p.status || "").toLowerCase().includes("crashloop"));
-    const replicaMismatch = ctx.deployments.filter((d) => {
-      const [ready, desired] = (d.replicas || "0/0").split("/").map((n) => Number(n));
-      return Number.isFinite(ready) && Number.isFinite(desired) && desired > ready;
-    });
-
-    const eventsByObject = new Map<string, number>();
-    for (const evt of warningEvents) {
-      const key = evt.involvedObject || "?/unknown";
-      eventsByObject.set(key, (eventsByObject.get(key) || 0) + 1);
-    }
-    const topObjects = [...eventsByObject.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-
-    lines.push(`Warning events: ${warningEvents.length}`);
-    lines.push(`CrashLoop-like pods: ${crashPods.length}`);
-    lines.push(`Deployments with replica mismatch: ${replicaMismatch.length}`);
-    if (topObjects.length > 0) {
-      lines.push("Top warning-involved objects:");
-      for (const [obj, count] of topObjects) {
-        lines.push(`- ${obj}: ${count} events`);
-      }
-    }
-
-    const suspicious = [...warningEvents]
-      .slice(0, 8)
-      .map((e) => `- [${e.reason}] ${e.involvedObject}: ${e.message}`);
-    if (suspicious.length > 0) {
-      lines.push("Recent warning samples:");
-      lines.push(...suspicious);
-    }
-
-    return `[CORRELATED SIGNALS]\n${lines.join("\n")}`;
   }
 
   private buildSreWorkflowInstruction(userInput: string): { instruction: string; intent: QueryIntent } {
@@ -594,28 +545,23 @@ export class ChatStore {
     try {
       /* ── Context pipeline ── */
 
-      // 1. Build system prompt (SRE persona + focused K8s data)
-      //    Instead of dumping the entire cluster, use ClusterMemoryService to
-      //    select only resources relevant to the current query + all anomalies.
-      //    This keeps the context budget lean for small models.
-      const promptContext = this.buildFocusedContext(userMessage.content);
+      // 1. Compress live cluster context for the system prompt.
+      //    all-namespaces: namespace digests + anomalies only
+      //    single-namespace: all resources for that namespace
+      const viewMode = this.selectedNamespace === "__all__" ? "all-namespaces" : "single-namespace";
+      const rawCtx = this.clusterContext ?? undefined;
+      const promptContext = rawCtx ? compressForPrompt(rawCtx, viewMode) : undefined;
       const baseSystemPrompt = this.ollamaService.buildSystemPrompt(promptContext);
       const modeInstruction = SRE_MODE_INSTRUCTIONS[this.selectedSreMode];
-      const { instruction: workflowInstruction, intent } = this.buildSreWorkflowInstruction(userMessage.content);
-      // Correlated signals (Warning events, CrashLoop pods, replica mismatches) are
-      // only relevant for investigation. Skip them for write/explain/general to save tokens.
-      const correlatedSignals = intent === "investigate" ? this.buildCorrelatedSignalsBlock() : "";
-      const systemPromptParts = [
+      const { instruction: workflowInstruction } = this.buildSreWorkflowInstruction(userMessage.content);
+      const systemPrompt = [
         baseSystemPrompt,
         "",
         "--- ACTIVE SRE MODE ---",
         modeInstruction,
-      ];
-      if (correlatedSignals) {
-        systemPromptParts.push("", correlatedSignals);
-      }
-      systemPromptParts.push("", workflowInstruction);
-      const systemPrompt = systemPromptParts.join("\n");
+        "",
+        workflowInstruction,
+      ].join("\n");
 
       // 2. Use existing summary (computed after previous response, not blocking)
       const summary = this.summaryManager.getSummary();
@@ -639,11 +585,16 @@ export class ChatStore {
 
       console.log("[K8s SRE] Context pipeline →", JSON.stringify(assembled.debug));
 
-      // 5. Stream via Ollama using the assembled context
-      const stream = this.ollamaService.streamChatAssembled(
-        assembled.messages,
-        { ...this.modelParams },
-      );
+      // 5. Stream via Ollama — use agentic tool-calling when cluster context is available
+      const stream = rawCtx
+        ? this.ollamaService.streamChatWithTools(
+            assembled.messages,
+            rawCtx,
+            K8S_TOOLS,
+            { ...this.modelParams },
+            executeK8sTool,
+          )
+        : this.ollamaService.streamChatAssembled(assembled.messages, { ...this.modelParams });
 
       for await (const chunk of stream) {
         runInAction(() => {
@@ -746,24 +697,54 @@ export class ChatStore {
     return Array.from(actions).slice(0, 5);
   }
 
+  /**
+   * Run a fidelity evaluation comparing raw vs compressed cluster context.
+   * Fires 3 Ollama calls (DiagA, DiagB, Judge) in the background and stores
+   * the result in this.fidelityReport for the UI to render.
+   */
+  async runFidelityEvaluation() {
+    const rawCtx = this.clusterContext;
+    if (!rawCtx) {
+      runInAction(() => { this.fidelityReport = null; });
+      return;
+    }
+
+    runInAction(() => { this.isFidelityRunning = true; });
+
+    try {
+      const viewMode = this.selectedNamespace === "__all__" ? "all-namespaces" : "single-namespace";
+      const compressed = this.ollamaService.buildSystemPrompt(
+        compressForPrompt(rawCtx, viewMode),
+      );
+
+      const report = await runFidelityEvaluation(
+        rawCtx,
+        compressed,
+        { endpoint: this.ollamaEndpoint, model: this.ollamaModel },
+      );
+
+      runInAction(() => { this.fidelityReport = report; });
+    } catch (e: any) {
+      console.error("[Fidelity] Evaluation failed:", e?.message);
+    } finally {
+      runInAction(() => { this.isFidelityRunning = false; });
+    }
+  }
+
   getDataSourceStatus(): Array<{ name: string; status: "ready" | "partial" | "missing"; detail: string }> {
     const c = this.clusterContext;
 
-    // Memory snapshot info
-    const snap = c
-      ? ClusterMemoryService.load(c.clusterName, this.selectedNamespace)
+    // Live context freshness
+    const contextAge = c?.gatheredAt != null ? Date.now() - c.gatheredAt : null;
+    const contextAgeStr = contextAge !== null
+      ? (contextAge < 60_000 ? `${Math.round(contextAge / 1000)}s ago` : `${Math.round(contextAge / 60_000)}m ago`)
       : null;
-    const memoryDetail = snap
-      ? `${ClusterMemoryService.isStale(snap) ? "⚠ stale " : ""}snapshot ${Math.round((Date.now() - snap.savedAt) / 60_000)}min ago · pods=${snap.pods.length}`
-      : "No snapshot yet";
-    const memoryStatus: "ready" | "partial" | "missing" = snap
-      ? (ClusterMemoryService.isStale(snap) ? "partial" : "ready")
-      : "missing";
+    const liveDetail = c ? `live · ${contextAgeStr} · pods=${c.pods.length}` : "Not gathered yet";
+    const liveStatus: "ready" | "partial" | "missing" = c ? "ready" : "missing";
 
     if (!c) {
       return [
-        { name: "Cluster Context", status: "missing", detail: "No context loaded yet" },
-        { name: "Cluster Memory", status: memoryStatus, detail: memoryDetail },
+        { name: "Cluster Context", status: "missing", detail: "Not gathered yet" },
         { name: "Conversation Memory", status: this.messages.length > 0 ? "partial" : "missing", detail: `${this.messages.length} messages` },
       ];
     }
@@ -776,6 +757,7 @@ export class ChatStore {
       : `${c.deployments.length} loaded`;
 
     return [
+      { name: "Cluster Context", status: liveStatus, detail: liveDetail },
       { name: "Pods", status: c.pods.length > 0 ? "ready" : "missing", detail: podDetail },
       { name: "Deployments", status: c.deployments.length > 0 ? "ready" : "missing", detail: depDetail },
       { name: "Services", status: c.services.length > 0 ? "ready" : "missing", detail: `${c.services.length} loaded` },
@@ -786,7 +768,6 @@ export class ChatStore {
         status: c.events.length >= 3 ? "ready" : c.events.length > 0 ? "partial" : "missing",
         detail: c.events.length >= 3 ? "Multi-signal correlation active" : c.events.length > 0 ? "Sparse events" : "No event signals",
       },
-      { name: "Cluster Memory", status: memoryStatus, detail: memoryDetail },
       { name: "Conversation Memory", status: this.messages.length > 0 ? "ready" : "partial", detail: `${this.messages.length} messages` },
     ];
   }

@@ -25,10 +25,10 @@ const MEMORY_KEY_PREFIX = "k8s-sre-memory";
 /** After this many ms the snapshot is considered stale (but still usable). */
 export const MEMORY_STALE_MS = 30 * 60 * 1000; // 30 minutes
 
-/** Max resources stored per kind (keeps serialized snapshot under ~100 kB). */
-const MAX_STORED_PODS = 200;
-const MAX_STORED_DEPS = 120;
-const MAX_STORED_SVCS = 120;
+/** Max resources stored per kind (keeps serialized snapshot under ~200 kB). */
+const MAX_STORED_PODS = 300;
+const MAX_STORED_DEPS = 150;
+const MAX_STORED_SVCS = 150;
 const MAX_STORED_EVENTS = 60;
 
 /** How many non-anomalous resources to retrieve per kind for the prompt. */

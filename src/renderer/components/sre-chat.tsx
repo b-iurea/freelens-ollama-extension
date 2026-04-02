@@ -7,7 +7,7 @@
 
 import { observer } from "mobx-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatMessage, OllamaModelParams } from "../../common/types";
+import type { ChatMessage, FidelityReport, OllamaModelParams } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { ChatStore, type SreModeKey } from "../stores/chat-store";
 import { nodeRequestJson } from "../services/ollama-service";
@@ -509,6 +509,8 @@ export const SreChat = observer(() => {
   const [showConnection, setShowConnection] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showSources, setShowSources] = useState(false);
+  const [showFidelity, setShowFidelity] = useState(false);
+  const [fidelityAnchor, setFidelityAnchor] = useState<PanelAnchor | null>(null);
   const [paramsAnchor, setParamsAnchor] = useState<PanelAnchor | null>(null);
   const [connectionAnchor, setConnectionAnchor] = useState<PanelAnchor | null>(null);
   const [statsAnchor, setStatsAnchor] = useState<PanelAnchor | null>(null);
@@ -560,10 +562,16 @@ export const SreChat = observer(() => {
     setShowSources((p) => !p);
   }, [getAnchor]);
 
+  const toggleFidelityPanel = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    setFidelityAnchor(getAnchor(e.currentTarget));
+    setShowFidelity((p) => !p);
+  }, [getAnchor]);
+
   const paramsPanelStyle = buildPanelStyle(paramsAnchor, 320, rootRef.current);
   const connectionPanelStyle = buildPanelStyle(connectionAnchor, 320, rootRef.current);
   const statsPanelStyle = buildPanelStyle(statsAnchor, 300, rootRef.current);
   const sourcesPanelStyle = buildPanelStyle(sourcesAnchor, 320, rootRef.current);
+  const fidelityPanelStyle = buildPanelStyle(fidelityAnchor, 480, rootRef.current);
 
   return (
     <div style={S.root} ref={rootRef}>
@@ -650,6 +658,13 @@ export const SreChat = observer(() => {
           <button style={S.btn} onClick={toggleSourcesPanel}>
             🧰 Sources
           </button>
+          <button
+            style={{ ...S.btn, color: chatStore.fidelityReport ? "#a6e3a1" : undefined }}
+            onClick={toggleFidelityPanel}
+            title="Model Fidelity Evaluation"
+          >
+            🔬 Fidelity
+          </button>
           {chatStore.hasMessages && (
             <button style={S.btn} onClick={handleRunbookExport}>📚 Runbook</button>
           )}
@@ -673,6 +688,9 @@ export const SreChat = observer(() => {
 
       {/* ── Data source visibility panel ── */}
       {showSources && <SourcesPanel onClose={() => setShowSources(false)} panelStyle={sourcesPanelStyle} />}
+
+      {/* ── Fidelity evaluation panel ── */}
+      {showFidelity && <FidelityPanel onClose={() => setShowFidelity(false)} panelStyle={fidelityPanelStyle} />}
 
       {/* ── Context bar ── */}
       {(ctx || chatStore.isGatheringContext) && (
@@ -1316,6 +1334,109 @@ const SourcesPanel = observer(({ onClose, panelStyle }: { onClose: () => void; p
             </div>
           ))}
         </div>
+      </div>
+    </>
+  );
+});
+
+/* ─── Fidelity Panel ─────────────────────────────────────────────────────── */
+
+const FidelityPanel = observer(({ onClose, panelStyle }: { onClose: () => void; panelStyle: React.CSSProperties }) => {
+  const report: FidelityReport | null = chatStore.fidelityReport;
+  const running = chatStore.isFidelityRunning;
+  const hasCtx = !!chatStore.clusterContext;
+
+  const scoreColor = (s: number) => s >= 0.8 ? "#a6e3a1" : s >= 0.5 ? "#f9e2af" : "#f38ba8";
+
+  return (
+    <>
+      <div style={pS.overlay} onClick={onClose} />
+      <div style={{ ...panelStyle, width: "480px" }}>
+        <div style={pS.head}>
+          <h4 style={pS.title}>🔬 Model Fidelity Evaluation</h4>
+          <button style={pS.close} onClick={onClose}>✕</button>
+        </div>
+
+        <p style={{ fontSize: "11px", color: "var(--textColorSecondary, #a6adc8)", margin: 0 }}>
+          Compares model output on raw cluster data vs the compressed context it normally receives.
+          Runs 3 Ollama calls (DiagA · DiagB · Judge).
+        </p>
+
+        <button
+          style={{
+            ...S.btn,
+            background: running ? "rgba(137,180,250,.06)" : "rgba(137,180,250,.12)",
+            color: running ? "#a6adc8" : "#89b4fa",
+            fontSize: "11px",
+            padding: "5px 12px",
+            cursor: running || !hasCtx ? "not-allowed" : "pointer",
+            opacity: !hasCtx ? 0.5 : 1,
+          }}
+          disabled={running || !hasCtx}
+          onClick={() => chatStore.runFidelityEvaluation()}
+        >
+          {running ? "⏳ Running evaluation…" : "▶ Run Evaluation"}
+        </button>
+
+        {!hasCtx && (
+          <p style={{ fontSize: "11px", color: "#f38ba8", margin: 0 }}>⚠ Refresh cluster context first.</p>
+        )}
+
+        {report && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "4px" }}>
+
+            {/* Score row */}
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" as const }}>
+              {[
+                { label: "Fidelity Score", value: `${(report.score * 100).toFixed(0)}%`, color: scoreColor(report.score) },
+                { label: "Judge Score", value: report.judgeScore != null ? `${report.judgeScore}/5` : "N/A", color: scoreColor((report.judgeScore ?? 0) / 5) },
+                { label: "Compression", value: `${(report.compressionRatio * 100).toFixed(1)}%`, color: "#89b4fa" },
+                { label: "Token Savings", value: `~${report.tokenSavings}`, color: "#89b4fa" },
+                { label: "Latency Δ", value: `${report.latencyDifferenceMs > 0 ? "+" : ""}${report.latencyDifferenceMs}ms`, color: report.latencyDifferenceMs >= 0 ? "#a6e3a1" : "#f9e2af" },
+              ].map((m) => (
+                <div key={m.label} style={{ border: "1px solid rgba(49,50,68,.6)", borderRadius: "6px", padding: "6px 10px", minWidth: "80px", textAlign: "center" as const }}>
+                  <div style={{ fontSize: "11px", color: "var(--textColorSecondary, #a6adc8)", marginBottom: "2px" }}>{m.label}</div>
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: m.color }}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Hallucinations */}
+            {report.hallucinatedResources.length > 0 && (
+              <div style={{ background: "rgba(243,139,168,.08)", border: "1px solid rgba(243,139,168,.3)", borderRadius: "6px", padding: "8px 10px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "#f38ba8", marginBottom: "4px" }}>⚠ Hallucinated resources in Diagnosis B</div>
+                <div style={{ fontSize: "11px", color: "#f38ba8", fontFamily: "monospace", wordBreak: "break-all" as const }}>
+                  {report.hallucinatedResources.join(" · ")}
+                </div>
+              </div>
+            )}
+
+            {/* Discrepancies */}
+            {report.discrepancies.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--textColorPrimary, #cdd6f4)" }}>Discrepancies</div>
+                {report.discrepancies.map((d, i) => (
+                  <div key={i} style={{ fontSize: "10px", color: "var(--textColorSecondary, #a6adc8)", borderLeft: "2px solid #f9e2af", paddingLeft: "8px" }}>
+                    <span style={{ color: "#f9e2af", fontWeight: 600, textTransform: "uppercase" as const, marginRight: "6px" }}>{d.type}</span>
+                    {d.description}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Judge explanation */}
+            <details style={{ fontSize: "11px" }}>
+              <summary style={{ cursor: "pointer", color: "var(--textColorSecondary, #a6adc8)", userSelect: "none" as const }}>Judge explanation</summary>
+              <pre style={{ marginTop: "6px", whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const, color: "var(--textColorPrimary, #cdd6f4)", background: "rgba(49,50,68,.4)", padding: "8px", borderRadius: "4px", fontSize: "10px" }}>
+                {report.judgeExplanation}
+              </pre>
+            </details>
+
+            <div style={{ fontSize: "10px", color: "var(--textColorSecondary, #a6adc8)" }}>
+              Evaluated {new Date(report.evaluatedAt).toLocaleString()} · model: {report.model}
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
