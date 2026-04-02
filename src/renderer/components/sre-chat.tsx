@@ -107,17 +107,19 @@ const S = {
     paddingBottom: "40px",
     boxSizing: "border-box" as const,
   },
-  header: {
+  titleBar: {
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    padding: "10px 16px",
-    background: "var(--layoutTabsBackground, #181825)",
+    gap: "8px",
+    padding: "8px 16px",
+    background: "linear-gradient(to right, #181825, #1e1e2e)",
     borderBottom: "1px solid var(--borderColor, #313244)",
-    flexShrink: 0,
+    flexShrink: 0 as const,
+    minHeight: "42px",
   },
   headerLeft: {
     display: "flex",
+    // Note: headerLeft kept for back button grouping, now inside titleBar
     alignItems: "center",
     gap: "8px",
   },
@@ -143,12 +145,7 @@ const S = {
     fontWeight: 600,
     color: "var(--textColorPrimary, #cdd6f4)",
   },
-  headerActions: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    flexWrap: "wrap" as const,
-  },
+  // headerActions removed; toolbar row is now a separate div using .sre-toolbar CSS class
   badge: (ok: boolean) => ({
     display: "inline-flex",
     alignItems: "center",
@@ -395,33 +392,14 @@ const S = {
     maxHeight: "120px",
     lineHeight: 1.4,
   },
-  sendBtn: (active: boolean) => ({
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 36,
-    height: 36,
-    borderRadius: "50%",
-    border: "none",
+  sendBtnColor: (active: boolean): React.CSSProperties => ({
     background: active ? "#89b4fa" : "var(--borderColor, #313244)",
     color: "#1e1e2e",
-    cursor: active ? "pointer" : "not-allowed",
-    flexShrink: 0,
-    opacity: active ? 1 : 0.5,
   }),
-  stopBtn: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 36,
-    height: 36,
-    borderRadius: "50%",
-    border: "none",
+  stopBtnBase: {
     background: "#f38ba8",
     color: "#1e1e2e",
-    cursor: "pointer",
-    flexShrink: 0,
-  },
+  } as React.CSSProperties,
   exportToast: {
     position: "absolute" as const,
     bottom: "56px",
@@ -442,7 +420,7 @@ const S = {
   },
 };
 
-/* Keyframes injected once */
+/* Keyframes + toolbar CSS injected once */
 const KEYFRAMES = `
 @keyframes k8s-sre-blink {
   0%, 100% { opacity: 1; }
@@ -451,6 +429,137 @@ const KEYFRAMES = `
 @keyframes k8s-sre-dot {
   0%, 80%, 100% { transform: scale(.5); opacity: .3; }
   40% { transform: scale(1); opacity: 1; }
+}
+@keyframes k8s-sre-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(243,139,168,.5); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 3px rgba(243,139,168,0); }
+}
+
+/* ── Toolbar ── */
+.sre-title-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: linear-gradient(to right, #181825, #1e1e2e);
+  border-bottom: 1px solid var(--borderColor, #313244);
+  flex-shrink: 0;
+  min-height: 42px;
+}
+.sre-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 16px;
+  background: rgba(17,17,27,.85);
+  backdrop-filter: blur(2px);
+  border-bottom: 1px solid var(--borderColor, #313244);
+  box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #313244 transparent;
+}
+.sre-toolbar::-webkit-scrollbar {
+  height: 3px;
+}
+.sre-toolbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sre-toolbar::-webkit-scrollbar-thumb {
+  background: #313244;
+  border-radius: 2px;
+}
+.sre-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--borderColor, #313244);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--textColorSecondary, #a6adc8);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.sre-toolbar-btn:hover:not(:disabled) {
+  background: rgba(137,180,250,.1);
+  border-color: rgba(137,180,250,.4);
+  color: #89b4fa;
+}
+.sre-toolbar-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.sre-toolbar-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: opacity 0.15s, box-shadow 0.15s;
+}
+.sre-toolbar-badge:hover {
+  opacity: 0.85;
+  box-shadow: 0 0 0 2px rgba(137,180,250,.25);
+}
+.sre-toolbar-select {
+  padding: 4px 8px;
+  border: 1px solid var(--borderColor, #313244);
+  border-radius: 6px;
+  background: var(--mainBackground, #1e1e2e);
+  color: var(--textColorPrimary, #cdd6f4);
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+.sre-toolbar-select:hover:not(:disabled) {
+  border-color: rgba(137,180,250,.4);
+}
+.sre-toolbar-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sre-toolbar-sep {
+  width: 1px;
+  height: 16px;
+  background: rgba(137,180,250,.2);
+  margin: 0 4px;
+  flex-shrink: 0;
+  align-self: center;
+}
+.sre-send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: box-shadow 0.15s, opacity 0.15s;
+}
+.sre-send-btn:hover:not(:disabled) {
+  box-shadow: 0 0 0 3px rgba(137,180,250,.3);
+}
+.sre-send-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 `;
 
@@ -578,103 +687,154 @@ export const SreChat = observer(() => {
       {/* inject keyframes */}
       <style dangerouslySetInnerHTML={{ __html: KEYFRAMES }} />
 
-      {/* ── Header ── */}
-      <div style={S.header}>
-        <div style={S.headerLeft}>
-          <button
-            style={S.backBtn}
-            onClick={() => window.history.back()}
-            title="Back to cluster"
-          >
-            ←
-          </button>
-          <span style={{ fontSize: "18px" }}>🤖</span>
-          <h2 style={S.headerTitle}>K8s SRE Assistant</h2>
-        </div>
-        <div style={S.headerActions}>
-          <button
-            style={{ ...S.badge(connected), border: "none", cursor: "pointer" }}
-            onClick={toggleConnectionPanel}
-            title="Ollama connection settings"
-          >
-            <span style={S.dot(connected)} />
-            {connected ? `Ollama · ${endpointHost}` : "Disconnected"}
-          </button>
-          {connected && chatStore.availableModels.length > 0 ? (
-            <select
-              style={S.modelSelect}
-              value={chatStore.ollamaModel}
-              onChange={(e) => chatStore.setModel(e.target.value)}
-              title="Select AI model"
-            >
-              {chatStore.availableModels.map((m) => (
-                <option key={m.name} value={m.name}>
-                  🧠 {m.name}
-                </option>
-              ))}
-            </select>
-          ) : connected ? (
-            <span style={{ ...S.badge(true), background: "rgba(137,180,250,.12)", color: "#89b4fa" }}>
-              🧠 {chatStore.ollamaModel}
+      {/* ── Title Bar ── */}
+      <div className="sre-title-bar">
+        <button
+          style={S.backBtn}
+          onClick={() => window.history.back()}
+          title="Back to cluster"
+        >
+          ←
+        </button>
+        <span style={{ fontSize: "18px" }}>🤖</span>
+        <h2 style={S.headerTitle}>K8s SRE Assistant</h2>
+      </div>
+
+      {/* ── Toolbar ── */}
+      <div className="sre-toolbar">
+        {/* Connection badge */}
+        <button
+          className="sre-toolbar-badge"
+          style={S.badge(connected)}
+          onClick={toggleConnectionPanel}
+          title="Ollama connection settings"
+        >
+          <span
+            style={{
+              ...S.dot(connected),
+              animation: connected ? undefined : "k8s-sre-pulse 1.8s infinite",
+            }}
+          />
+          {connected ? `Ollama · ${endpointHost}` : "Disconnected"}
+        </button>
+
+        {/* Model select — always visible; disabled + shows last model when disconnected */}
+        <select
+          className="sre-toolbar-select"
+          style={{ maxWidth: "185px", color: connected ? "var(--textColorPrimary, #cdd6f4)" : "var(--textColorSecondary, #a6adc8)" }}
+          value={chatStore.ollamaModel}
+          onChange={(e) => chatStore.setModel(e.target.value)}
+          title="Select AI model"
+          disabled={!connected || chatStore.availableModels.length === 0}
+        >
+          {chatStore.availableModels.length > 0
+            ? chatStore.availableModels.map((m) => (
+                <option key={m.name} value={m.name}>🧠 {m.name}</option>
+              ))
+            : <option value={chatStore.ollamaModel}>🧠 {chatStore.ollamaModel}</option>
+          }
+        </select>
+
+        {/* SRE mode select */}
+        <select
+          className="sre-toolbar-select"
+          style={{ maxWidth: "175px", color: "#f9e2af" }}
+          value={chatStore.selectedSreMode}
+          onChange={(e) => chatStore.setSelectedSreMode(e.target.value as SreModeKey)}
+          title="SRE mode"
+        >
+          {SRE_MODE_OPTIONS.map((m) => (
+            <option key={m.key} value={m.key}>{m.label}</option>
+          ))}
+        </select>
+
+        {/* ⚙️ Model params — always visible, disabled when not connected */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={toggleParamsPanel}
+          title="Model parameters"
+          disabled={!connected}
+        >
+          ⚙️
+        </button>
+
+        {/* ⚡ Stats — always visible, disabled when no stats yet */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={toggleStatsPanel}
+          title="Last response performance stats"
+          disabled={!chatStore.lastPerformanceStats}
+          style={chatStore.lastPerformanceStats ? { color: "#a6e3a1", borderColor: "rgba(166,227,161,.3)" } : undefined}
+        >
+          ⚡ {chatStore.lastPerformanceStats ? `${chatStore.lastPerformanceStats.tokensPerSec} t/s` : "—"}
+        </button>
+
+        <span className="sre-toolbar-sep" />
+
+        {/* 🔄 Refresh */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={() => chatStore.refreshClusterContext()}
+          disabled={chatStore.isGatheringContext}
+          title="Refresh cluster context"
+        >
+          🔄 {chatStore.isGatheringContext ? "Scanning…" : "Refresh"}
+        </button>
+
+        {/* 🧰 Sources */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={toggleSourcesPanel}
+          title="Data sources visibility"
+        >
+          🧰 Sources
+        </button>
+
+        {/* 🔬 Fidelity — neutral color; score shown inline when report exists */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={toggleFidelityPanel}
+          title="Model Fidelity Evaluation"
+        >
+          🔬 Fidelity
+          {chatStore.fidelityReport && (
+            <span style={{ color: "#89b4fa", fontWeight: 700, marginLeft: 2 }}>
+              {Math.round(chatStore.fidelityReport.score * 100)}%
             </span>
-          ) : null}
-          <select
-            style={S.modeSelect}
-            value={chatStore.selectedSreMode}
-            onChange={(e) => chatStore.setSelectedSreMode(e.target.value as SreModeKey)}
-            title="SRE mode"
-          >
-            {SRE_MODE_OPTIONS.map((m) => (
-              <option key={m.key} value={m.key}>{m.label}</option>
-            ))}
-          </select>
-          {connected && (
-            <button
-              style={{ ...S.btn, fontSize: "13px", padding: "3px 8px" }}
-              onClick={toggleParamsPanel}
-              title="Model parameters"
-            >
-              ⚙️
-            </button>
           )}
-          {connected && chatStore.lastPerformanceStats && (
-            <button
-              style={{
-                ...S.btn,
-                fontSize: "10px",
-                padding: "3px 8px",
-                color: "#a6e3a1",
-                borderColor: "rgba(166,227,161,.3)",
-              }}
-              onClick={toggleStatsPanel}
-              title="Last response performance stats"
-            >
-              ⚡ {chatStore.lastPerformanceStats.tokensPerSec} t/s
-            </button>
-          )}
-          <button style={S.btn} onClick={() => chatStore.refreshClusterContext()} disabled={chatStore.isGatheringContext}>
-            🔄 {chatStore.isGatheringContext ? "Scanning…" : "Refresh"}
-          </button>
-          <button style={S.btn} onClick={toggleSourcesPanel}>
-            🧰 Sources
-          </button>
-          <button
-            style={{ ...S.btn, color: chatStore.fidelityReport ? "#a6e3a1" : undefined }}
-            onClick={toggleFidelityPanel}
-            title="Model Fidelity Evaluation"
-          >
-            🔬 Fidelity
-          </button>
-          {chatStore.hasMessages && (
-            <button style={S.btn} onClick={handleRunbookExport}>📚 Runbook</button>
-          )}
-          {chatStore.hasMessages && (
-            <button style={S.btn} onClick={handleExport}>📄 Export</button>
-          )}
-          {chatStore.hasMessages && (
-            <button style={S.btn} onClick={() => chatStore.clearMessages()}>🗑️ Clear</button>
-          )}
-        </div>
+        </button>
+
+        <span className="sre-toolbar-sep" />
+
+        {/* 📚 Runbook — always visible, disabled when no messages */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={handleRunbookExport}
+          disabled={!chatStore.hasMessages}
+          title="Export runbook"
+        >
+          📚 Runbook
+        </button>
+
+        {/* 📄 Export — always visible, disabled when no messages */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={handleExport}
+          disabled={!chatStore.hasMessages}
+          title="Export incident summary"
+        >
+          📄 Export
+        </button>
+
+        {/* 🗑️ Clear — always visible, disabled when no messages */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={() => chatStore.clearMessages()}
+          disabled={!chatStore.hasMessages}
+          title="Clear conversation"
+        >
+          🗑️ Clear
+        </button>
       </div>
 
       {/* ── Params panel (same context) ── */}
@@ -835,12 +995,18 @@ export const SreChat = observer(() => {
             />
           </div>
           {chatStore.isLoading ? (
-            <button style={S.stopBtn} onClick={() => chatStore.cancelStream()} title="Stop">
+            <button
+              className="sre-send-btn"
+              style={S.stopBtnBase}
+              onClick={() => chatStore.cancelStream()}
+              title="Stop"
+            >
               <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
             </button>
           ) : (
             <button
-              style={S.sendBtn(!!input.trim() && connected)}
+              className="sre-send-btn"
+              style={S.sendBtnColor(!!input.trim() && connected)}
               onClick={send}
               disabled={!input.trim() || !connected}
               title="Send"

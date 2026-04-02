@@ -89,35 +89,6 @@ function extractResourceNames(raw: string): Set<string> {
 }
 
 /**
- * Scan a diagnosis text for resource-name-like tokens and return ones that
- * do NOT appear in the known set from the raw data.
- */
-function detectHallucinations(diagnosis: string, knownNames: Set<string>): string[] {
-  const mentioned = new Set<string>();
-  const re = /\b([a-z][a-z0-9-]{2,63}(?:\.[a-z0-9-]+)*)\b/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(diagnosis.toLowerCase())) !== null) {
-    const name = m[1];
-    if (name.includes("-") || name.includes(".")) {
-      mentioned.add(name);
-    }
-  }
-  // Filter: only flag names that look like real k8s resources and are unknown
-  const stopwords = new Set([
-    "crash-loop", "back-off", "out-of-memory", "liveness-probe", "readiness-probe",
-    "image-pull", "node-not-ready", "oom-killed", "running-state", "pending-state",
-    "kube-system", "default-namespace", "cluster-wide", "multi-container",
-  ]);
-  const hallucinated: string[] = [];
-  for (const name of mentioned) {
-    if (!knownNames.has(name) && !stopwords.has(name) && name.split("-").length >= 2) {
-      hallucinated.push(name);
-    }
-  }
-  return hallucinated.slice(0, 10); // Cap to 10 to avoid noise
-}
-
-/**
  * Parse the judge's 1-5 score from its text response.
  * Accepts "Score: 4", "4/5", "I give it a 3", etc.
  */
@@ -146,26 +117,61 @@ function parseJudgeScore(text: string): number | null {
 function extractDiscrepancies(judgeText: string, hallucinatedResources: string[]): FidelityDiscrepancy[] {
   const discrepancies: FidelityDiscrepancy[] = [];
 
-  // Hallucinations come in first — they are objective
+  // Hallucinations come in first — determined programmatically, not by the judge
   for (const name of hallucinatedResources) {
     discrepancies.push({
       type: "hallucinated_resource",
-      description: `Resource "${name}" was cited in Diagnosis B but is not present in the raw data.`,
+      description: `Resource "${name}" appears in Diagnosis B but not in the raw cluster data.`,
     });
   }
 
-  // Mine judge text for common SRE fidelity patterns
+  // ── Primary: parse structured DISCREPANCIES_JSON section ─────────────────
+  const jsonSection = judgeText.match(/DISCREPANCIES_JSON:\s*(\[[\s\S]*?\])/i);
+  if (jsonSection) {
+    try {
+      const parsed = JSON.parse(jsonSection[1]) as Array<{ type: string; description: string }>;
+      const validTypes = new Set<FidelityDiscrepancy["type"]>(
+        ["missing_info", "wrong_severity", "extra_info", "hallucinated_resource"],
+      );
+      for (const item of parsed) {
+        if (typeof item.description === "string" && item.description.trim().length > 10) {
+          discrepancies.push({
+            type: validTypes.has(item.type as FidelityDiscrepancy["type"])
+              ? (item.type as FidelityDiscrepancy["type"])
+              : "missing_info",
+            description: item.description.trim(),
+          });
+        }
+      }
+      // Structured parse succeeded — deduplicate and return
+      const seen = new Set<string>();
+      return discrepancies.filter((d) => {
+        const key = d.description.slice(0, 60);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(0, 15);
+    } catch {
+      // Fall through to regex fallback
+    }
+  }
+
+  // ── Fallback: regex sentence extraction (model ignored the format) ────────
   const missingRe = /(?:miss(?:ing|es?)|manca|omit|lacks?|absent|not\s+mention)/i;
   const wrongSevRe = /(?:severity|criticit[àa]|gravit[àa]|underestimat|overestimat|wrong\s+(?:severity|level)|incorrect(?:ly)?)/i;
   const extraRe = /(?:hallucin|invent|fabbric|fabricat|add(?:ed|s)\s+information|extra\s+detail)/i;
 
-  const sentences = judgeText.split(/[.!?\n]+/).map((s) => s.trim()).filter(Boolean);
+  const sentences = judgeText
+    .split(/[.!?\n]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 40 && !/^[#\-|*>]/.test(s) && !/^\d+\./.test(s));
+
   for (const sentence of sentences) {
-    if (missingRe.test(sentence) && sentence.length > 20) {
+    if (missingRe.test(sentence)) {
       discrepancies.push({ type: "missing_info", description: sentence });
-    } else if (wrongSevRe.test(sentence) && sentence.length > 20) {
+    } else if (wrongSevRe.test(sentence)) {
       discrepancies.push({ type: "wrong_severity", description: sentence });
-    } else if (extraRe.test(sentence) && sentence.length > 20) {
+    } else if (extraRe.test(sentence)) {
       discrepancies.push({ type: "hallucinated_resource", description: sentence });
     }
   }
@@ -276,6 +282,12 @@ export interface FidelityEvalOptions {
   diagnosticPrompt?: string;
   /** Per-call timeout in ms. Defaults to 120 000 (2 min). */
   timeoutMs?: number;
+  /**
+   * Authoritative list of all known resource names in the cluster
+   * (namespaces, pod names, deployment names, service names, node names).
+   * When provided, this is passed directly to the judge — no regex extraction needed.
+   */
+  knownResourceNames?: string[];
 }
 
 const DEFAULT_DIAGNOSTIC_PROMPT = `You are a senior Kubernetes SRE. Analyse the following cluster data and identify the primary problem.
@@ -286,9 +298,13 @@ Be concise: state the Root Cause in one sentence, list the top 2-3 supporting si
 const JUDGE_SYSTEM = `You are an expert evaluator comparing two Kubernetes SRE diagnoses.
 Diagnosis A was produced from COMPLETE cluster data.
 Diagnosis B was produced from COMPRESSED cluster data.
-Your task: assess whether B retains all the critical information from A.`;
+Your task: assess whether B retains all the critical information from A.
+You must follow the output format exactly.`;
 
-const JUDGE_USER_TEMPLATE = `DIAGNOSIS A (from complete data):
+const JUDGE_USER_TEMPLATE = `KNOWN RESOURCES (extracted from the raw cluster data — use this list for hallucination detection):
+{{knownNames}}
+
+DIAGNOSIS A (from complete data):
 ---
 {{diagA}}
 ---
@@ -298,11 +314,25 @@ DIAGNOSIS B (from compressed data):
 {{diagB}}
 ---
 
-Does Diagnosis B contain the same critical information as Diagnosis A?
-Respond with:
-1. A score from 1 to 5 (5 = identical critical content, 1 = completely different or misleading).
-2. A brief explanation of what is missing or wrong in B (if anything).
-3. If B introduces resource names not present in A, list them as "Hallucinated: <name>".`;
+Does Diagnosis B retain all critical information from Diagnosis A?
+
+Reply using EXACTLY this format. Do NOT use markdown. Do NOT add any other sections.
+
+SCORE: <integer 1-5>
+
+HALLUCINATED_RESOURCES: <comma-separated list of resource names cited in B that are NOT in the KNOWN RESOURCES list above, or "none">
+
+DISCREPANCIES_JSON: <valid JSON array, or []>
+
+EXPLANATION:
+<plain text, no markdown, no bullet points, no headers>
+
+Rules:
+- SCORE 5 = identical critical content. SCORE 1 = completely different or misleading.
+- HALLUCINATED_RESOURCES: only Kubernetes resource names (pods, deployments, services, nodes). Ignore generic English words.
+- DISCREPANCIES_JSON: array of objects with keys "type" (missing_info | wrong_severity | extra_info) and "description" (one plain sentence). Maximum 5 items. Use [] if none.
+- Do NOT include hallucinations in DISCREPANCIES_JSON.
+- EXPLANATION: plain text only.`;
 
 /**
  * Run a fidelity evaluation: compare model output on raw vs compressed K8s data.
@@ -339,25 +369,49 @@ export async function runFidelityEvaluation(
   console.log("[Fidelity] DiagA:", resultA.text.length, "chars,", resultA.latencyMs, "ms");
   console.log("[Fidelity] DiagB:", resultB.text.length, "chars,", resultB.latencyMs, "ms");
 
-  // ── Step 2: Hallucination check ─────────────────────────────────────────
-  const knownNames = extractResourceNames(rawStr);
-  const hallucinatedResources = detectHallucinations(resultB.text, knownNames);
-  console.log("[Fidelity] Hallucinated resources:", hallucinatedResources.length > 0 ? hallucinatedResources : "none");
+  // ── Step 2: Build known names list ─────────────────────────────────────────
+  // Prefer the authoritative list passed from the caller (built from structured
+  // ClusterContext — 100% accurate). Fall back to regex extraction only if not provided.
+  let knownNamesList: string;
+  if (options.knownResourceNames && options.knownResourceNames.length > 0) {
+    knownNamesList = options.knownResourceNames.map((n) => n.toLowerCase()).join(", ");
+    console.log("[Fidelity] Known resource names (structured):", options.knownResourceNames.length, "entries");
+  } else {
+    const knownNamesSet = extractResourceNames(rawStr);
+    knownNamesList = [...knownNamesSet]
+      .filter((n) => /\d/.test(n) || n.split("-").length >= 3)
+      .slice(0, 120)
+      .join(", ") || "(none extracted)";
+    console.log("[Fidelity] Known resource names (regex fallback):", knownNamesList.slice(0, 200));
+  }
 
   // ── Step 3: Judge call ──────────────────────────────────────────────────
   let judgeScore: number | null = null;
   let judgeExplanation = "(judge call skipped)";
   let discrepancies: FidelityDiscrepancy[] = [];
+  let hallucinatedResources: string[] = [];
 
   try {
     const judgeUserMsg = JUDGE_USER_TEMPLATE
+      .replace("{{knownNames}}", knownNamesList)
       .replace("{{diagA}}", resultA.text)
       .replace("{{diagB}}", resultB.text);
 
     const judgeResult = await ollamaCall(endpoint, model, JUDGE_SYSTEM, judgeUserMsg, timeoutMs);
-    judgeExplanation = judgeResult.text;
-    judgeScore = parseJudgeScore(judgeExplanation);
-    discrepancies = extractDiscrepancies(judgeExplanation, hallucinatedResources);
+    judgeScore = parseJudgeScore(judgeResult.text);
+
+    // Parse HALLUCINATED_RESOURCES section from judge response
+    const hallucinatedMatch = judgeResult.text.match(/HALLUCINATED_RESOURCES:\s*([^\n]+)/i);
+    const hallucinatedRaw = hallucinatedMatch ? hallucinatedMatch[1].trim() : "";
+    hallucinatedResources = hallucinatedRaw.toLowerCase() === "none" || !hallucinatedRaw
+      ? []
+      : hallucinatedRaw.split(/,\s*/).map((s) => s.trim()).filter((s) => s.length > 2);
+    console.log("[Fidelity] Hallucinated resources (judge):", hallucinatedResources.length > 0 ? hallucinatedResources : "none");
+
+    // Show only the EXPLANATION section in the UI; fall back to full text if format was ignored
+    const explanationMatch = judgeResult.text.match(/EXPLANATION:\s*([\s\S]+)/i);
+    judgeExplanation = explanationMatch ? explanationMatch[1].trim() : judgeResult.text;
+    discrepancies = extractDiscrepancies(judgeResult.text, hallucinatedResources);
     console.log("[Fidelity] Judge score:", judgeScore, "| discrepancies:", discrepancies.length);
   } catch (e: any) {
     console.warn("[Fidelity] Judge call failed:", e?.message);

@@ -1,6 +1,6 @@
 {
   "name": "@freelensapp/k8s-sre-assistant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Kubernetes SRE AI Assistant for Freelens - Chat with Ollama to manage and troubleshoot your clusters",
   "repository": {
     "type": "git",
