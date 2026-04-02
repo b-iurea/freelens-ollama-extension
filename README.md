@@ -3,11 +3,8 @@
 An AI-powered **Kubernetes SRE (Site Reliability Engineer)** assistant embedded directly in Freelens. Chat with a local Ollama model that sees your live cluster state and adapts its response format to what you're actually asking.
 
 ![Freelens Extension](https://img.shields.io/badge/Freelens-Extension-blue)
-![Version](https://img.shields.io/badge/version-0.3.0-orange)
+![Version](https://img.shields.io/badge/version-0.2.0-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
-
-<b>This is a vibecoded plugin so feel free to steal, edit, update or improve.
-All suggestions are welcome. </b>
 
 ---
 NB. There are some issue relative to how models manage the answers and how it's forced to answer general contexts.
@@ -56,7 +53,6 @@ Eliminates the "full cluster dump on every message" problem for large clusters.
 - **Query-Relevant Filtering** — Each message injects only the 15 most BM25-relevant pods/deployments/services for the current query, plus all anomalous resources. The prompt shows `(15 shown of 180, most relevant + all anomalies)` so the model knows it is working with a subset
 - **Health Aggregates** — Cluster-wide status counts (`170 Running · 7 Pending · 3 CrashLoopBackOff`) and deployment health (`105 healthy · 15 degraded`) computed once at snapshot time
 - **Snapshot Age** — Shown in the Sources panel; stale snapshots (> 30 min) are flagged but still used as a fallback
-- **Always-Live Context** — The data actually passed to the model is always a fresh `KubeApi.list()` fetch, not the persisted snapshot. The snapshot is used only to warm-start the namespace selector on Freelens restart
 
 **Token impact on a 180-pod cluster:**
 
@@ -99,12 +95,8 @@ The assistant adapts its response format to the intent of the query — no more 
 
 ### UI & Developer Experience
 
-- **Fixed Toolbar** — All controls live in a dedicated toolbar row below the title bar; scrolls horizontally on narrow windows, never wraps or jumps
-- **Always-Visible Buttons** — ⚙️ Params, 📚 Runbook, 📄 Export, 🗑️ Clear are always present and disabled (greyed out) when inactive, not hidden
-- **Model Selector** — Always visible; shows last-used model grayed out when disconnected
-- **Hover Effects** — All toolbar buttons have smooth blue highlight transitions; send button shows a glow ring on hover
-- **Fidelity Inline Score** — Fidelity button shows the score (e.g. `🔬 Fidelity 87%`) in blue when a report is available, not green (BUGs on small context, WIP)
-- **SRE Mode Selector** — Select mode: Auto / Troubleshoot / Security / Cost / Capacity / YAML
+- **In-Chat Model Selector** — Switch Ollama models from the chat header; takes effect immediately
+- **SRE Mode Selector** — Select mode from the context bar: Auto / Troubleshoot / Security / Cost / Capacity / YAML
 - **Suggested Actions** — Context-aware follow-up chips shown after each response to accelerate investigation loops
 - **Sources Panel** — Shows what data the model used: snapshot age, filtered resource counts, warning event count
 - **Performance Stats** — After each response: tokens/sec, prompt tokens, generation time, model load time
@@ -371,18 +363,6 @@ pnpm pack          # Pack .tgz for local Freelens installation
 
 ## Changelog
 
-### v0.3.0
-
-- **Live cluster data** — Cluster context is now always fetched live via `KubeApi.list()` before each session; the localStorage snapshot is used only to warm-start the namespace selector, never as the data source passed to the model
-- **Toolbar refactor** — Title bar and toolbar are now separate rows; toolbar scrolls horizontally on narrow windows, eliminating button wrapping and positional shifts
-- **Always-visible toolbar buttons** — ⚙️, 📚, 📄, 🗑️ are always rendered; disabled with reduced opacity when inactive instead of conditionally absent
-- **Model select when disconnected** — selector stays visible, showing the last-used model grayed out
-- **Fidelity button** — no longer turns green after an evaluation; shows the score inline in blue (e.g. `🔬 Fidelity 87%`)
-- **Disconnected indicator** — status dot pulses when Ollama is unreachable
-- **Hover transitions** — toolbar buttons and send button have smooth 150ms highlight/glow effects
-- **Fidelity hallucination detector fix** — sub-segments of compound K8s names (e.g. `repo-server` from `argo-cd-argocd-repo-server`) are no longer falsely flagged as hallucinations
-- **Fidelity discrepancies fix** — markdown headings, bullet lines, and table rows from the judge response are filtered out and no longer appear as discrepancy items
-
 ### v0.2.0
 
 - **Cluster Memory** — persistent `localStorage` snapshot with warm-start on Freelens restart
@@ -407,8 +387,4 @@ pnpm pack          # Pack .tgz for local Freelens installation
 
 ## License
 
-Copyright (c) 2026 b-iurea. [MIT License](https://opensource.org/licenses/MIT)
-
-## Contacts
-
-b.iurea94@gmail.com
+Copyright (c) 2026 biurea. [MIT License](https://opensource.org/licenses/MIT)

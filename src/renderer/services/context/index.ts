@@ -17,5 +17,3 @@ export type { AssembledContext } from "./context-builder";
 export { ClusterMemoryService } from "./cluster-memory";
 export type { ClusterMemorySnapshot, ClusterAnomalies } from "./cluster-memory";
 export { MEMORY_STALE_MS } from "./cluster-memory";
-export { compressForPrompt, extractContainerSummaries, groupEventsByReason, buildNamespaceDigests, SIDECAR_BLACKLIST } from "./k8s-compressor";
-export { K8S_TOOLS, executeK8sTool } from "./k8s-tools";

@@ -12,16 +12,13 @@
 import http from "http";
 import https from "https";
 import type {
-  ApiMessage,
   ChatMessage,
-  CompressedClusterContext,
+  ClusterContext,
   OllamaChatRequest,
   OllamaModelInfo,
   OllamaModelParams,
   OllamaPerformanceStats,
   OllamaStreamChunk,
-  OllamaTool,
-  OllamaToolCall,
 } from "../../common/types";
 
 const DEFAULT_ENDPOINT = "http://localhost:11434";
@@ -239,155 +236,182 @@ export class OllamaService {
    * When clusterContext carries totalXxx fields, the context was filtered
    * by ClusterMemoryService and we annotate with "(N of M, query-relevant)".
    */
-  buildSystemPrompt(ctx?: CompressedClusterContext): string {
+  buildSystemPrompt(clusterContext?: ClusterContext): string {
     let prompt = `You are an expert Kubernetes SRE assistant embedded in Freelens (a K8s IDE).
 
 ROLE: Senior SRE with deep expertise in troubleshooting, monitoring, security, performance, and reliability of Kubernetes clusters.
 
 RULES:
-- Use Markdown.
+- Use Markdown. Put kubectl commands in \`\`\`bash blocks.
+- Prefix destructive commands with ⚠️ WARNING.
 - For problems: give Root Cause → Immediate Fix → Long-term Prevention.
-- Analyse the LIVE cluster data below FIRST before drawing conclusions.
-- NEVER provide kubectl commands, YAML manifests, or shell scripts unless the user EXPLICITLY asks for them.
-- Prefix any mutating action recommendation with ⚠️ RISK: low|medium|high.
+- Analyse the LIVE cluster data below FIRST. Only suggest kubectl for actions or data NOT already provided.
+- Never suggest \`kubectl delete\` without warning. Mention \`--dry-run=client\` where appropriate.
 `;
 
-    if (!ctx) {
-      prompt += `\n(No cluster context available yet.)\n`;
-      return prompt;
-    }
+    if (clusterContext) {
+      const scope = clusterContext.namespace;
+      const isFiltered = clusterContext.totalPods != null;
+      const qualifier = isFiltered ? ", most relevant to query + all anomalies" : "";
 
-    const scopeLine = ctx.viewMode === "all-namespaces"
-      ? "Scope: all namespaces"
-      : `Namespace: ${ctx.namespace ?? "default"}`;
+      prompt += `\n--- LIVE CLUSTER CONTEXT${isFiltered ? " (query-filtered)" : ""} ---\n`;
+      prompt += `Cluster: ${clusterContext.clusterName}\n`;
+      prompt += `Scope: ${scope}\n`;
 
-    prompt += `\n--- LIVE CLUSTER CONTEXT ---\n`;
-    prompt += `Cluster: ${ctx.clusterName} | ${scopeLine}\n`;
-    if (ctx.gatheredAt) {
-      const ageMs = Date.now() - ctx.gatheredAt;
-      const ageStr = ageMs < 60_000 ? `${Math.round(ageMs / 1000)}s` : `${Math.round(ageMs / 60_000)}m`;
-      prompt += `⚡ Context: live · gathered ${ageStr} ago\n`;
-    }
-
-    // Summary counts header
-    if (ctx.viewMode === "all-namespaces") {
-      const anom = ctx.anomalyPods?.length ?? 0;
-      prompt += `Pods: ${ctx.totalPods ?? 0} total`;
-      if (anom > 0) prompt += ` (${anom} anomalous ⚠)`;
-      prompt += ` · Deployments: ${ctx.totalDeployments ?? 0} · Services: ${ctx.totalServices ?? 0}\n`;
-    } else {
-      prompt += `Pods: ${ctx.pods?.length ?? 0} · Deployments: ${ctx.deployments?.length ?? 0} · Services: ${ctx.services?.length ?? 0}\n`;
-    }
-
-    // Nodes (always full — cluster-scoped)
-    if (ctx.nodes.length > 0) {
-      prompt += `\nNODES (${ctx.nodes.length}):\n`;
-      for (const n of ctx.nodes) {
-        const flag = (n.status ?? "") !== "Ready" ? " ⚠" : "";
-        prompt += `  ${n.name} [${n.status ?? "?"}]${flag}\n`;
+      if (isFiltered && clusterContext.snapshotAge) {
+        const ageMin = Math.round((Date.now() - clusterContext.snapshotAge) / 60_000);
+        prompt += `Snapshot age: ${ageMin}min\n`;
       }
-    }
 
-    if (ctx.viewMode === "all-namespaces") {
-      // Namespace digest table — one line per namespace
-      if (ctx.namespaceDigests && ctx.namespaceDigests.length > 0) {
-        prompt += `\nNAMESPACE OVERVIEW (${ctx.namespaceDigests.length}):\n`;
-        for (const d of ctx.namespaceDigests) {
-          const podParts = Object.entries(d.podCounts)
+      // Namespaces (compact list — replaced by namespace health rollup when available)
+      if (clusterContext.namespaceHealth && Object.keys(clusterContext.namespaceHealth).length > 0) {
+        const nsEntries = Object.entries(clusterContext.namespaceHealth)
+          .sort(([, a], [, b]) => {
+            // Sort: namespaces with issues first
+            const aScore = (b.degradedDeployments > 0 ? 2 : 0) + (b.warningEvents > 0 ? 1 : 0);
+            const bScore = (a.degradedDeployments > 0 ? 2 : 0) + (a.warningEvents > 0 ? 1 : 0);
+            return aScore - bScore;
+          });
+        prompt += `\nNAMESPACE OVERVIEW (${nsEntries.length}):\n`;
+        for (const [ns, health] of nsEntries) {
+          // Pod status line: "12 Running · 2 Pending · 1 CrashLoopBackOff"
+          const podParts = Object.entries(health.podStatusCounts)
             .sort(([a], [b]) => (a === "Running" ? -1 : b === "Running" ? 1 : a.localeCompare(b)))
             .map(([s, c]) => `${c} ${s}`)
             .join(" · ");
-          const depPart = d.totalDeployments > 0
-            ? `  ${d.totalDeployments} deps${d.degradedDeployments > 0 ? ` (${d.degradedDeployments} degraded ⚠)` : ""}`
+          const depPart = health.totalDeployments > 0
+            ? `  ${health.totalDeployments} deps${health.degradedDeployments > 0 ? ` (${health.degradedDeployments} degraded ⚠)` : ""}`
             : "";
-          const svcPart = d.totalServices > 0 ? `  ${d.totalServices} svc` : "";
-          const warnPart = d.warningCount > 0 ? `  ${d.warningCount} warnings ⚠` : "";
-          prompt += `  ${d.name}: ${podParts || "0 pods"}${depPart}${svcPart}${warnPart}\n`;
+          const evtPart = health.warningEvents > 0 ? `  ${health.warningEvents} warnings ⚠` : "";
+          prompt += `  ${ns}: ${podParts || "0 pods"}${depPart}${evtPart}\n`;
+        }
+      } else if (clusterContext.namespaces.length > 0) {
+        prompt += `Namespaces (${clusterContext.namespaces.length}): ${clusterContext.namespaces.join(", ")}\n`;
+      }
+
+      // Nodes (always cluster-scoped)
+      if (clusterContext.nodes.length > 0) {
+        prompt += `\nNODES (${clusterContext.nodes.length}):\n`;
+        for (const n of clusterContext.nodes) {
+          prompt += `  ${n.name} [${n.status || "?"}]\n`;
         }
       }
 
-      // Anomalous pods with container detail
-      if (ctx.anomalyPods && ctx.anomalyPods.length > 0) {
-        prompt += `\nANOMALOUS PODS (${ctx.anomalyPods.length}):\n`;
-        for (const p of ctx.anomalyPods) {
-          prompt += `  [${p.namespace ?? "?"}] ${p.name}  ${p.status ?? "?"}  ready=${p.ready ?? "?"}\n`;
-          if (p.containers && p.containers.length > 0) {
-            for (const c of p.containers) {
-              const kind = c.isMain ? "main" : "sidecar";
-              const restarts = c.restarts != null ? ` · restarts=${c.restarts}` : "";
-              const exit = c.exitCode != null ? ` · exit=${c.exitCode}` : "";
-              const reason = c.reason ? ` · ${c.reason}` : "";
-              prompt += `    ↳ ${c.name} (${kind})  ${c.state}${restarts}${exit}${reason}\n`;
+      // Helper: group resources by namespace for compact display
+      const groupByNs = <T extends { namespace?: string }>(items: T[]): Map<string, T[]> => {
+        const m = new Map<string, T[]>();
+        for (const item of items) {
+          const ns = item.namespace || "default";
+          if (!m.has(ns)) m.set(ns, []);
+          m.get(ns)!.push(item);
+        }
+        return m;
+      };
+
+      // Pods
+      if (clusterContext.pods.length > 0 || clusterContext.totalPods != null) {
+        const total = clusterContext.totalPods ?? clusterContext.pods.length;
+        const shown = clusterContext.pods.length;
+        const isSubset = clusterContext.totalPods != null && clusterContext.totalPods > shown;
+
+        // One-line health aggregate (e.g. "170 Running · 7 Pending · 3 CrashLoopBackOff")
+        let healthLine = "";
+        if (clusterContext.podStatusCounts) {
+          const parts = Object.entries(clusterContext.podStatusCounts)
+            .sort(([a], [b]) => (a === "Running" ? -1 : b === "Running" ? 1 : a.localeCompare(b)))
+            .map(([status, count]) => `${count} ${status}`)
+            .join(" · ");
+          healthLine = ` — ${parts}`;
+        }
+
+        const shownLabel = isSubset ? `${shown} shown of ${total}${qualifier}` : `${total}`;
+        prompt += `\nPODS (${shownLabel}${healthLine}):\n`;
+
+        if (clusterContext.pods.length > 0) {
+          const byNs = groupByNs(clusterContext.pods);
+          for (const [ns, pods] of byNs) {
+            prompt += `  [${ns}]\n`;
+            for (const p of pods) {
+              prompt += `    ${p.name}  ${p.status || "?"}  ready=${p.ready || "?"}\n`;
             }
           }
         }
       }
 
-      // Degraded deployments
-      if (ctx.anomalyDeployments && ctx.anomalyDeployments.length > 0) {
-        prompt += `\nDEGRADED DEPLOYMENTS (${ctx.anomalyDeployments.length}):\n`;
-        for (const d of ctx.anomalyDeployments) {
-          prompt += `  [${d.namespace ?? "?"}] ${d.name}  replicas=${d.replicas ?? "?"}\n`;
+      // Deployments
+      if (clusterContext.deployments.length > 0 || clusterContext.totalDeployments != null) {
+        const total = clusterContext.totalDeployments ?? clusterContext.deployments.length;
+        const shown = clusterContext.deployments.length;
+        const isSubset = clusterContext.totalDeployments != null && clusterContext.totalDeployments > shown;
+
+        // Health aggregate (e.g. "105 healthy · 15 degraded")
+        let healthLine = "";
+        if (clusterContext.deploymentHealthSummary) {
+          const { healthy, degraded } = clusterContext.deploymentHealthSummary;
+          healthLine = ` — ${healthy} healthy · ${degraded} degraded`;
+        }
+
+        const shownLabel = isSubset ? `${shown} shown of ${total}${qualifier}` : `${total}`;
+        prompt += `\nDEPLOYMENTS (${shownLabel}${healthLine}):\n`;
+
+        if (clusterContext.deployments.length > 0) {
+          const byNs = groupByNs(clusterContext.deployments);
+          for (const [ns, deps] of byNs) {
+            prompt += `  [${ns}]\n`;
+            for (const d of deps) {
+              prompt += `    ${d.name}  replicas=${d.replicas || "?"}\n`;
+            }
+          }
         }
       }
+
+      // Services
+      if (clusterContext.services.length > 0 || clusterContext.totalServices != null) {
+        const total = clusterContext.totalServices ?? clusterContext.services.length;
+        const shown = clusterContext.services.length;
+        const isSubset = clusterContext.totalServices != null && clusterContext.totalServices > shown;
+        const shownLabel = isSubset ? `${shown} shown of ${total}${qualifier}` : `${total}`;
+        prompt += `\nSERVICES (${shownLabel}):\n`;
+
+        if (clusterContext.services.length > 0) {
+          const byNs = groupByNs(clusterContext.services);
+          for (const [ns, svcs] of byNs) {
+            prompt += `  [${ns}]\n`;
+            for (const s of svcs) {
+              prompt += `    ${s.name}  type=${s.status || "ClusterIP"}\n`;
+            }
+          }
+        }
+      }
+
+      // Events — warnings first, then a few normals
+      if (clusterContext.events.length > 0) {
+        const warnings = clusterContext.events.filter(e => e.type === "Warning");
+        const normals = clusterContext.events.filter(e => e.type !== "Warning");
+        const evtLabel = clusterContext.totalEvents != null && clusterContext.totalEvents > clusterContext.events.length
+          ? `${clusterContext.events.length} of ${clusterContext.totalEvents}${qualifier}`
+          : `${clusterContext.events.length}`;
+        prompt += `\nEVENTS (${evtLabel}, ${warnings.length} warnings):\n`;
+        if (warnings.length > 0) {
+          prompt += `  ⚠ WARNINGS:\n`;
+          for (const e of warnings) {
+            prompt += `    [${e.reason}] ${e.involvedObject}: ${e.message}\n`;
+          }
+        }
+        if (normals.length > 0) {
+          const show = normals.slice(0, 10);
+          prompt += `  NORMAL (latest ${show.length}):\n`;
+          for (const e of show) {
+            prompt += `    [${e.reason}] ${e.involvedObject}: ${e.message}\n`;
+          }
+        }
+      }
+
+      prompt += `--- END CLUSTER CONTEXT ---\n`;
     } else {
-      // single-namespace: all pods
-      if (ctx.pods && ctx.pods.length > 0) {
-        prompt += `\nPODS (${ctx.pods.length}):\n`;
-        for (const p of ctx.pods) {
-          const isAnomaly =
-            (p.status ?? "") !== "Running" &&
-            (p.status ?? "") !== "Completed" &&
-            (p.status ?? "") !== "Succeeded" &&
-            (p.status ?? "") !== "";
-          const flag = isAnomaly ? " ⚠" : "";
-          prompt += `  ${p.name}  ${p.status ?? "?"}  ready=${p.ready ?? "?"}${flag}\n`;
-          if (p.containers && p.containers.length > 0) {
-            for (const c of p.containers) {
-              const kind = c.isMain ? "main" : "sidecar";
-              const restarts = c.restarts != null ? ` · restarts=${c.restarts}` : "";
-              const exit = c.exitCode != null ? ` · exit=${c.exitCode}` : "";
-              const reason = c.reason ? ` · ${c.reason}` : "";
-              prompt += `    ↳ ${c.name} (${kind})  ${c.state}${restarts}${exit}${reason}\n`;
-            }
-          }
-        }
-      }
-
-      // All deployments
-      if (ctx.deployments && ctx.deployments.length > 0) {
-        prompt += `\nDEPLOYMENTS (${ctx.deployments.length}):\n`;
-        for (const d of ctx.deployments) {
-          const [ready, desired] = (d.replicas ?? "0/0").split("/").map(Number);
-          const isAnomaly =
-            Number.isFinite(ready) && Number.isFinite(desired) && desired > 0 && ready < desired;
-          const flag = isAnomaly ? " ⚠" : "";
-          prompt += `  ${d.name}  replicas=${d.replicas ?? "?"}${flag}\n`;
-        }
-      }
-
-      // All services — omit type when it is the default ClusterIP
-      if (ctx.services && ctx.services.length > 0) {
-        prompt += `\nSERVICES (${ctx.services.length}):\n`;
-        for (const s of ctx.services) {
-          const t = s.status ?? "ClusterIP";
-          const typePart = t !== "ClusterIP" ? `  type=${t}` : "";
-          prompt += `  ${s.name}${typePart}\n`;
-        }
-      }
+      prompt += `\n(No cluster context available — suggest kubectl commands to investigate.)\n`;
     }
 
-    // Warning events (grouped, both modes)
-    if (ctx.groupedWarnings.length > 0) {
-      prompt += `\nWARNING EVENTS (${ctx.groupedWarnings.length} groups):\n`;
-      for (const e of ctx.groupedWarnings) {
-        const countPart = (e.count ?? 1) > 1 ? ` ×${e.count}` : "";
-        const agePart = e.lastSeen ? ` | ${e.lastSeen} ago` : "";
-        prompt += `  [${e.reason}${countPart}${agePart}] ${e.involvedObject}: ${e.message}\n`;
-      }
-    }
-
-    prompt += `--- END CLUSTER CONTEXT ---\n`;
     return prompt;
   }
 
@@ -425,7 +449,7 @@ RULES:
    */
   async *streamChat(
     messages: ChatMessage[],
-    clusterContext?: CompressedClusterContext,
+    clusterContext?: ClusterContext,
     modelParams?: OllamaModelParams,
   ): AsyncGenerator<string, void, unknown> {
     this.abortController = new AbortController();
@@ -455,7 +479,9 @@ RULES:
       messagesCount: request.messages.length,
       systemPromptLength: systemPrompt.length,
       hasClusterContext: !!clusterContext,
-      viewMode: clusterContext?.viewMode ?? "none",
+      contextSummary: clusterContext
+        ? `pods=${clusterContext.pods.length} deps=${clusterContext.deployments.length} svc=${clusterContext.services.length} nodes=${clusterContext.nodes.length} events=${clusterContext.events.length}`
+        : "none",
     }));
 
     const body = JSON.stringify(request);
@@ -521,7 +547,7 @@ RULES:
    */
   async chat(
     messages: ChatMessage[],
-    clusterContext?: CompressedClusterContext,
+    clusterContext?: ClusterContext,
     modelParams?: OllamaModelParams,
   ): Promise<string> {
     const systemPrompt = this.buildSystemPrompt(clusterContext);
@@ -571,6 +597,11 @@ RULES:
     }
   }
 
+  /**
+   * Stream a chat using a pre-assembled message array (from ContextBuilder).
+   * This bypasses buildSystemPrompt — the caller is responsible for the full
+   * message list including system prompt, summary, chunks, recent turns.
+   */
   async *streamChatAssembled(
     assembledMessages: Array<{ role: string; content: string }>,
     modelParams?: OllamaModelParams,
@@ -647,156 +678,5 @@ RULES:
       this.abortController = null;
       this.currentAbort = null;
     }
-  }
-
-  /**
-   * Agentic streaming chat with tool-calling support.
-   *
-   * Flow per round:
-   *  1. Send messages + tools to Ollama and stream the response.
-   *  2. If the final chunk carries `tool_calls`, the model wants to call tools:
-   *     - Yield a synthetic status line so the UI shows activity.
-   *     - Execute each tool against the live ClusterContext (zero extra API calls).
-   *     - Append tool results as role:"tool" messages and loop.
-   *  3. If no `tool_calls`, the text was already streamed — exit.
-   *
-   * Token safety: tool results are produced by executeK8sTool which uses the
-   * same compressor functions as the main context (groupEventsByReason, etc.).
-   */
-  async *streamChatWithTools(
-    assembledMessages: Array<{ role: string; content: string }>,
-    liveCtx: import("../../common/types").ClusterContext,
-    tools: OllamaTool[],
-    modelParams: OllamaModelParams | undefined,
-    executeToolFn: (
-      name: string,
-      args: Record<string, any>,
-      ctx: import("../../common/types").ClusterContext,
-    ) => string,
-  ): AsyncGenerator<string, void, unknown> {
-    const MAX_TOOL_ROUNDS = 4;
-    this.lastStats = null;
-
-    const messages: ApiMessage[] = [...assembledMessages];
-
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const options = OllamaService.sanitiseOptions(modelParams);
-      const request: OllamaChatRequest = {
-        model: this.model,
-        messages,
-        stream: true,
-        tools,
-        ...(options ? { options } : {}),
-      };
-
-      console.log("[K8s SRE] streamChatWithTools round", round, "→", JSON.stringify({
-        model: request.model,
-        messagesCount: request.messages.length,
-        tools: tools.map((t) => t.function.name),
-      }));
-
-      const { response, abort } = nodeStreamRequest(`${this.endpoint}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-        timeout: 300_000,
-      });
-      this.currentAbort = abort;
-
-      let doneChunk: OllamaStreamChunk | null = null;
-      // Ollama emits tool_calls on a non-done intermediate chunk, not the done chunk.
-      // Accumulate from any chunk so we never miss them.
-      let pendingToolCalls: OllamaToolCall[] = [];
-
-      const processChunk = (chunk: OllamaStreamChunk) => {
-        if (chunk.message?.content) return chunk.message.content;
-        if (chunk.message?.tool_calls?.length) {
-          pendingToolCalls = [...pendingToolCalls, ...chunk.message.tool_calls];
-        }
-        return null;
-      };
-
-      try {
-        const { stream } = await response;
-        let buffer = "";
-
-        for await (const rawChunk of stream) {
-          buffer += rawChunk;
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const chunk: OllamaStreamChunk = JSON.parse(line);
-              const text = processChunk(chunk);
-              if (text) yield text;
-              if (chunk.done) {
-                doneChunk = chunk;
-                this.lastStats = this.parseStats(chunk);
-                if (this.lastStats) {
-                  console.log("[K8s SRE] Perf (tools round", round, ")→", JSON.stringify(this.lastStats));
-                }
-              }
-            } catch { /* skip malformed */ }
-          }
-        }
-
-        if (buffer.trim()) {
-          try {
-            const chunk: OllamaStreamChunk = JSON.parse(buffer);
-            const text = processChunk(chunk);
-            if (text) yield text;
-            if (chunk.done) {
-              doneChunk = chunk;
-              this.lastStats = this.parseStats(chunk);
-            }
-          } catch { /* ignore */ }
-        }
-      } catch (error: any) {
-        if (
-          error.name === "AbortError" ||
-          error.message?.includes("aborted") ||
-          error.message?.includes("destroyed")
-        ) {
-          yield "\n\n*[Response interrupted]*";
-          this.currentAbort = null;
-          return;
-        }
-        throw error;
-      }
-
-      // Prefer accumulated tool_calls; fall back to done-chunk field for models
-      // that do include them there.
-      const toolCalls: OllamaToolCall[] =
-        pendingToolCalls.length > 0
-          ? pendingToolCalls
-          : (doneChunk?.message?.tool_calls ?? []);
-
-      if (toolCalls.length === 0) {
-        // Text response — already streamed to caller.
-        break;
-      }
-
-      // Append assistant’s tool-call turn, then execute each tool.
-      messages.push({ role: "assistant", content: "", tool_calls: toolCalls });
-
-      for (const tc of toolCalls) {
-        const toolName = tc.function.name;
-        const toolArgs: Record<string, any> = tc.function.arguments ?? {};
-        const argsStr = Object.entries(toolArgs)
-          .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-          .join(", ");
-
-        yield `\n*[Tool: ${toolName}(${argsStr})]*\n`;
-
-        const result = executeToolFn(toolName, toolArgs, liveCtx);
-        console.log("[K8s SRE] Tool", toolName, "→", result.length, "chars");
-        messages.push({ role: "tool", content: result });
-      }
-      // Loop: next round sends the enriched thread back to the model.
-    }
-
-    this.currentAbort = null;
   }
 }

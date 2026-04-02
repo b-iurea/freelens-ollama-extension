@@ -15,7 +15,6 @@ import { Renderer } from "@freelensapp/extensions";
 import type {
   ClusterContext,
 } from "../../common/types";
-import { extractContainerSummaries } from "./context/k8s-compressor";
 
 /* ─── helpers ─── */
 
@@ -101,10 +100,11 @@ function cleanLabels(obj: any): Record<string, string> | undefined {
   return Object.keys(clean).length > 0 ? clean : undefined;
 }
 
-/* ── Collection limits ── */
-// No cap on pods/deployments/services — compressForPrompt() handles token budget.
-// Only events are capped here; groupEventsByReason() further reduces them to ≤20 groups.
-const MAX_EVENTS = 60;
+/* ── Per-resource-kind limits (keeps prompt under ~4k tokens) ── */
+const MAX_PODS = 120;
+const MAX_DEPLOYMENTS = 80;
+const MAX_SERVICES = 80;
+const MAX_EVENTS = 40;
 
 /* ── Anomaly-first sorting helpers ──
  * Place unhealthy resources before healthy ones so truncation preserves
@@ -182,7 +182,6 @@ export class K8sContextService {
       services: [],
       nodes: [],
       events: [],
-      gatheredAt: Date.now(),
     };
 
     const a = api();
@@ -220,22 +219,15 @@ export class K8sContextService {
       if (pods?.length) {
         console.log("[K8s SRE] Pods: total", pods.length, filterNamespace ? `(ns=${filterNamespace})` : "(all)");
         // Sort unhealthy pods first so truncation preserves anomalies
-        context.pods = sortPodsByAnomaly(pods).map((pod: any) => {
+        context.pods = sortPodsByAnomaly(pods).slice(0, MAX_PODS).map((pod: any) => {
           const meta = pod.metadata ?? pod;
-          const status: string = pod.getStatusMessage?.() ?? pod.status?.phase ?? "Unknown";
-          const summary: import("../../common/types").K8sResourceSummary = {
+          return {
             name: pod.getName?.() ?? meta.name ?? "unknown",
             namespace: pod.getNs?.() ?? meta.namespace ?? "default",
-            status,
+            status: pod.getStatusMessage?.() ?? pod.status?.phase ?? "Unknown",
             ready: getReadyCount(pod),
             labels: cleanLabels(pod),
           };
-          // Attach container detail for pods in a non-healthy state
-          if (status !== "Running" && status !== "Completed" && status !== "Succeeded") {
-            const containers = extractContainerSummaries(pod);
-            if (containers.length > 0) summary.containers = containers;
-          }
-          return summary;
         });
       } else {
         console.warn("[K8s SRE] Pods: none found");
@@ -254,7 +246,7 @@ export class K8sContextService {
       if (deps?.length) {
         console.log("[K8s SRE] Deployments: total", deps.length, filterNamespace ? `(ns=${filterNamespace})` : "(all)");
         // Sort deployments with replica mismatch first
-        context.deployments = sortDeploymentsByAnomaly(deps).map((dep: any) => {
+        context.deployments = sortDeploymentsByAnomaly(deps).slice(0, MAX_DEPLOYMENTS).map((dep: any) => {
           const meta = dep.metadata ?? dep;
           return {
             name: dep.getName?.() ?? meta.name ?? "unknown",
@@ -279,7 +271,7 @@ export class K8sContextService {
       }
       if (svcs?.length) {
         console.log("[K8s SRE] Services: total", svcs.length, filterNamespace ? `(ns=${filterNamespace})` : "(all)");
-        context.services = svcs.map((svc: any) => {
+        context.services = svcs.slice(0, MAX_SERVICES).map((svc: any) => {
           const meta = svc.metadata ?? svc;
           return {
             name: svc.getName?.() ?? meta.name ?? "unknown",
@@ -343,7 +335,6 @@ export class K8sContextService {
           message: (evt.message ?? "").slice(0, 200),  // truncate long event messages
           involvedObject: `${evt.involvedObject?.kind ?? "?"}/${evt.involvedObject?.name ?? "?"}`,
           age: (evt.metadata ?? evt).creationTimestamp,
-          namespace: evt.involvedObject?.namespace ?? (evt.metadata ?? evt).namespace,
         }));
       } else {
         console.warn("[K8s SRE] Events: none found");
