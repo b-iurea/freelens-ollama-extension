@@ -184,6 +184,44 @@ function extractDiscrepancies(judgeText: string, hallucinatedResources: string[]
 
 interface CallResult { text: string; latencyMs: number; promptTokens: number; evalTokens: number }
 
+/**
+ * Parse an Ollama /api/chat response body.
+ * Handles both:
+ *  - stream:false — single JSON object
+ *  - stream:true  — NDJSON (multiple JSON lines); Ollama cloud models sometimes
+ *    ignore stream:false and stream anyway
+ */
+function parseOllamaBody(body: string): { text: string; promptTokens: number; evalTokens: number } {
+  // Try single JSON first (expected for stream:false)
+  try {
+    const data = JSON.parse(body);
+    // Qwen3/QwQ thinking models: content may be empty when thinking tokens fill
+    // num_predict budget; fall back to the thinking field so we at least get something.
+    const text = (data.message?.content as string | undefined)
+      || (data.message?.thinking as string | undefined)
+      || "";
+    return { text, promptTokens: data.prompt_eval_count ?? 0, evalTokens: data.eval_count ?? 0 };
+  } catch {
+    // Fall back to NDJSON (stream:true response despite stream:false request)
+    let text = "";
+    let promptTokens = 0;
+    let evalTokens = 0;
+    for (const line of body.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const chunk = JSON.parse(trimmed);
+        if (chunk.message?.content) text += chunk.message.content as string;
+        if (chunk.done) {
+          promptTokens = chunk.prompt_eval_count ?? 0;
+          evalTokens = chunk.eval_count ?? 0;
+        }
+      } catch { /* skip malformed lines */ }
+    }
+    return { text, promptTokens, evalTokens };
+  }
+}
+
 async function ollamaCall(
   endpoint: string,
   model: string,
@@ -194,7 +232,11 @@ async function ollamaCall(
   const request = {
     model,
     stream: false,
-    options: { temperature: 0.1, num_predict: 800, top_p: 0.9, repeat_penalty: 1.1 },
+    // think:false disables extended thinking mode on Qwen3/QwQ models in Ollama.
+    // Without this, thinking tokens consume num_predict before any content is emitted.
+    // Ignored by models that do not support the option.
+    think: false,
+    options: { temperature: 0.1, num_predict: 2000, top_p: 0.9, repeat_penalty: 1.1 },
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessage },
@@ -207,12 +249,15 @@ async function ollamaCall(
 
   if (!res.ok) throw new Error(`Ollama API error: HTTP ${res.status} — ${res.body.slice(0, 200)}`);
 
-  const data = JSON.parse(res.body);
+  const parsed = parseOllamaBody(res.body);
+  if (!parsed.text) {
+    console.warn("[Fidelity] ollamaCall returned empty content. Body preview:", res.body.slice(0, 300));
+  }
   return {
-    text: data.message?.content ?? "",
+    text: parsed.text,
     latencyMs,
-    promptTokens: data.prompt_eval_count ?? 0,
-    evalTokens: data.eval_count ?? 0,
+    promptTokens: parsed.promptTokens,
+    evalTokens: parsed.evalTokens,
   };
 }
 

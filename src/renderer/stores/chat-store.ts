@@ -22,6 +22,58 @@ import {
   executeK8sTool,
 } from "../services/context";
 
+/**
+ * Render a ClusterContext into a compact, human-readable text that a language
+ * model can parse for diagnostic purposes.  Used as the "raw data" input for
+ * DiagA in the Fidelity Evaluator so the model gets structured text instead of
+ * a raw K8s API JSON blob.
+ */
+function buildRawContextText(ctx: ClusterContext): string {
+  const lines: string[] = [];
+  lines.push(`CLUSTER: ${ctx.clusterName}`);
+  lines.push(`NAMESPACES (${ctx.namespaces.length}): ${ctx.namespaces.join(", ")}`);
+  if (ctx.gatheredAt) {
+    lines.push(`GATHERED: ${new Date(ctx.gatheredAt).toISOString()}`);
+  }
+
+  lines.push(`\nPODS (${ctx.pods.length}):`);
+  for (const pod of ctx.pods) {
+    const ns = pod.namespace ? `${pod.namespace}/` : "";
+    const containers = pod.containers
+      ?.map((c) => `${c.name}:${c.state}${c.exitCode != null ? `/exit=${c.exitCode}` : ""}${c.restarts ? `/restarts=${c.restarts}` : ""}`)
+      .join(", ") ?? "";
+    lines.push(`  ${ns}${pod.name}: ${pod.status ?? "Unknown"}${containers ? ` [${containers}]` : ""}`);
+  }
+
+  lines.push(`\nDEPLOYMENTS (${ctx.deployments.length}):`);
+  for (const dep of ctx.deployments) {
+    const ns = dep.namespace ? `${dep.namespace}/` : "";
+    lines.push(`  ${ns}${dep.name}: ready=${dep.ready ?? "?"} replicas=${dep.replicas ?? "?"}`);
+  }
+
+  lines.push(`\nSERVICES (${ctx.services.length}):`);
+  for (const svc of ctx.services) {
+    const ns = svc.namespace ? `${svc.namespace}/` : "";
+    lines.push(`  ${ns}${svc.name}: ${svc.status ?? "active"}`);
+  }
+
+  lines.push(`\nNODES (${ctx.nodes.length}):`);
+  for (const node of ctx.nodes) {
+    lines.push(`  ${node.name}: ${node.status ?? "Unknown"}`);
+  }
+
+  lines.push(`\nEVENTS (${ctx.events.length}):`);
+  for (const evt of ctx.events) {
+    const ns = evt.namespace ? `${evt.namespace} | ` : "";
+    const count = evt.count ? ` (x${evt.count})` : "";
+    const age = evt.lastSeen ?? evt.age ?? "??";
+    lines.push(`  ${ns}${evt.type} ${evt.reason} | ${evt.involvedObject}${count} | ${age}`);
+    if (evt.message) lines.push(`    ${evt.message}`);
+  }
+
+  return lines.join("\n");
+}
+
 const SETTINGS_KEY = "k8s-sre-assistant-settings";
 
 interface PersistedSettings {
@@ -713,12 +765,13 @@ export class ChatStore {
 
     try {
       const viewMode = this.selectedNamespace === "__all__" ? "all-namespaces" : "single-namespace";
+      const rawFormatted = buildRawContextText(rawCtx);
       const compressed = this.ollamaService.buildSystemPrompt(
         compressForPrompt(rawCtx, viewMode),
       );
 
       const report = await runFidelityEvaluation(
-        rawCtx,
+        rawFormatted,
         compressed,
         { endpoint: this.ollamaEndpoint, model: this.ollamaModel },
       );
