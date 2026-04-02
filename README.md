@@ -7,6 +7,9 @@ An AI-powered **Kubernetes SRE (Site Reliability Engineer)** assistant embedded 
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
+NB. There are some issue relative to how models manage the answers and how it's forced to answer general contexts.
+At the moment large cluster context are distruptive and small LLM maybe cannot handle the quantity of data proposed.
+---
 
 ## Features
 
@@ -22,7 +25,7 @@ An AI-powered **Kubernetes SRE (Site Reliability Engineer)** assistant embedded 
 
 ### Smart Context Management
 
-Designed to work well on small (3–9B) models against large production clusters.
+Designed to work well on small (3–9B) models against large production clusters(wip).
 
 - **Context Pipeline** — ChunkManager → BM25 Retriever → SummaryManager → ContextBuilder prevents "lost-in-the-middle" on long conversations
 - **K8s-Aware BM25 Retrieval** — Pure TypeScript BM25 that preserves compound terms (`kube-system`, `apps/v1`, pod names, IPs) as searchable tokens. Runs only on non-summarised messages to avoid duplicating the compressed history
