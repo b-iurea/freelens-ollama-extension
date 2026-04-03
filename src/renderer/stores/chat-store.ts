@@ -773,7 +773,19 @@ export class ChatStore {
       const report = await runFidelityEvaluation(
         rawFormatted,
         compressed,
-        { endpoint: this.ollamaEndpoint, model: this.ollamaModel },
+        {
+          endpoint: this.ollamaEndpoint,
+          model: this.ollamaModel,
+          // Pass all known resource names directly from the structured context —
+          // avoids regex extraction noise and slice cutoffs.
+          knownResourceNames: [
+            ...(rawCtx.namespaces ?? []),
+            ...rawCtx.pods.map((p) => p.name),
+            ...rawCtx.deployments.map((d) => d.name),
+            ...rawCtx.services.map((s) => s.name),
+            ...rawCtx.nodes.map((n) => n.name),
+          ],
+        },
       );
 
       runInAction(() => { this.fidelityReport = report; });
