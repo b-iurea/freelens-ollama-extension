@@ -6,8 +6,8 @@
  */
 
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
-import type { ChatMessage, ClusterContext, FidelityReport, OllamaModelInfo, OllamaModelParams, OllamaPerformanceStats } from "../../common/types";
-import { DEFAULT_MODEL_PARAMS } from "../../common/types";
+import type { ChatMessage, ClusterContext, FidelityReport, OllamaModelInfo, OllamaModelParams, OllamaPerformanceStats, ToolsConfig } from "../../common/types";
+import { DEFAULT_MODEL_PARAMS, DEFAULT_TOOLS_CONFIG } from "../../common/types";
 import { K8sContextService } from "../services/k8s-context-service";
 import { OllamaService } from "../services/ollama-service";
 import { runFidelityEvaluation } from "../services/fidelity-evaluator";
@@ -83,6 +83,7 @@ interface PersistedSettings {
   modelParams?: OllamaModelParams;
   selectedNamespace?: string;
   selectedSreMode?: SreModeKey;
+  toolsConfig?: ToolsConfig;
 }
 
 export type SreModeKey = "auto" | "troubleshoot" | "security" | "cost" | "capacity" | "yaml";
@@ -176,6 +177,7 @@ export class ChatStore {
   /** Latest fidelity evaluation result, null until first run. */
   fidelityReport: FidelityReport | null = null;
   isFidelityRunning = false;
+  toolsConfig: ToolsConfig = { ...DEFAULT_TOOLS_CONFIG, tools: { ...DEFAULT_TOOLS_CONFIG.tools } };
 
   private ollamaService: OllamaService;
   private chunkManager: ChunkManager;
@@ -210,6 +212,7 @@ export class ChatStore {
       lastPerformanceStats: observable,
       fidelityReport: observable,
       isFidelityRunning: observable,
+      toolsConfig: observable,
       hasMessages: computed,
       lastMessage: computed,
       setEndpoint: action,
@@ -225,6 +228,7 @@ export class ChatStore {
       refreshClusterContext: action,
       sendMessage: action,
       runFidelityEvaluation: action,
+      setToolsConfig: action,
     });
 
     this.loadSettings();
@@ -260,6 +264,13 @@ export class ChatStore {
         if (s.modelParams) this.modelParams = { ...DEFAULT_MODEL_PARAMS, ...s.modelParams };
         if (s.selectedNamespace) this.selectedNamespace = s.selectedNamespace;
         if (s.selectedSreMode) this.selectedSreMode = s.selectedSreMode;
+        if (s.toolsConfig) {
+          this.toolsConfig = {
+            ...DEFAULT_TOOLS_CONFIG,
+            ...s.toolsConfig,
+            tools: { ...DEFAULT_TOOLS_CONFIG.tools, ...s.toolsConfig.tools },
+          };
+        }
       }
     } catch {
       // first run or corrupt data — use defaults
@@ -275,6 +286,7 @@ export class ChatStore {
         modelParams: this.modelParams,
         selectedNamespace: this.selectedNamespace,
         selectedSreMode: this.selectedSreMode,
+        toolsConfig: this.toolsConfig,
       };
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
     } catch {
@@ -425,6 +437,11 @@ export class ChatStore {
 
   setModelParams(params: Partial<OllamaModelParams>) {
     this.modelParams = { ...this.modelParams, ...params };
+    this.saveSettings();
+  }
+
+  setToolsConfig(config: ToolsConfig) {
+    this.toolsConfig = config;
     this.saveSettings();
   }
 
@@ -638,11 +655,15 @@ export class ChatStore {
       console.log("[K8s SRE] Context pipeline →", JSON.stringify(assembled.debug));
 
       // 5. Stream via Ollama — use agentic tool-calling when cluster context is available
-      const stream = rawCtx
+      //    and at least one tool is enabled by the user.
+      const enabledTools = this.toolsConfig.enabled
+        ? K8S_TOOLS.filter((t) => this.toolsConfig.tools[t.function.name as keyof ToolsConfig["tools"]])
+        : [];
+      const stream = rawCtx && enabledTools.length > 0
         ? this.ollamaService.streamChatWithTools(
             assembled.messages,
             rawCtx,
-            K8S_TOOLS,
+            enabledTools,
             { ...this.modelParams },
             executeK8sTool,
           )
