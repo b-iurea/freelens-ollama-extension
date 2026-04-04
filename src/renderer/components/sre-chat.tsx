@@ -7,7 +7,7 @@
 
 import { observer } from "mobx-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatMessage, FidelityReport, OllamaModelParams } from "../../common/types";
+import type { ChatMessage, FidelityReport, OllamaModelParams, ToolsConfig } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS } from "../../common/types";
 import { ChatStore, type SreModeKey } from "../stores/chat-store";
 import { nodeRequestJson } from "../services/ollama-service";
@@ -619,11 +619,13 @@ export const SreChat = observer(() => {
   const [showStats, setShowStats] = useState(false);
   const [showSources, setShowSources] = useState(false);
   const [showFidelity, setShowFidelity] = useState(false);
+  const [showTools, setShowTools] = useState(false);
   const [fidelityAnchor, setFidelityAnchor] = useState<PanelAnchor | null>(null);
   const [paramsAnchor, setParamsAnchor] = useState<PanelAnchor | null>(null);
   const [connectionAnchor, setConnectionAnchor] = useState<PanelAnchor | null>(null);
   const [statsAnchor, setStatsAnchor] = useState<PanelAnchor | null>(null);
   const [sourcesAnchor, setSourcesAnchor] = useState<PanelAnchor | null>(null);
+  const [toolsAnchor, setToolsAnchor] = useState<PanelAnchor | null>(null);
   const connected = chatStore.isOllamaConnected;
   const ctx = chatStore.clusterContext;
   const warnCount = ctx ? ctx.events.filter((ev) => ev.type === "Warning").length : 0;
@@ -676,11 +678,17 @@ export const SreChat = observer(() => {
     setShowFidelity((p) => !p);
   }, [getAnchor]);
 
+  const toggleToolsPanel = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+    setToolsAnchor(getAnchor(e.currentTarget));
+    setShowTools((p) => !p);
+  }, [getAnchor]);
+
   const paramsPanelStyle = buildPanelStyle(paramsAnchor, 320, rootRef.current);
   const connectionPanelStyle = buildPanelStyle(connectionAnchor, 320, rootRef.current);
   const statsPanelStyle = buildPanelStyle(statsAnchor, 300, rootRef.current);
   const sourcesPanelStyle = buildPanelStyle(sourcesAnchor, 320, rootRef.current);
   const fidelityPanelStyle = buildPanelStyle(fidelityAnchor, 480, rootRef.current);
+  const toolsPanelStyle = buildPanelStyle(toolsAnchor, 280, rootRef.current);
 
   return (
     <div style={S.root} ref={rootRef}>
@@ -756,6 +764,16 @@ export const SreChat = observer(() => {
           disabled={!connected}
         >
           ⚙️
+        </button>
+
+        {/* 🔧 Tools */}
+        <button
+          className="sre-toolbar-btn"
+          onClick={toggleToolsPanel}
+          title="K8s tool calling"
+          style={chatStore.toolsConfig.enabled ? { color: "#a6e3a1", borderColor: "rgba(166,227,161,.3)" } : undefined}
+        >
+          🔧 Tools{!chatStore.toolsConfig.enabled ? " · OFF" : ""}
         </button>
 
         {/* ⚡ Stats — always visible, disabled when no stats yet */}
@@ -839,6 +857,9 @@ export const SreChat = observer(() => {
 
       {/* ── Params panel (same context) ── */}
       {showParams && <ModelParamsPanel onClose={() => setShowParams(false)} panelStyle={paramsPanelStyle} />}
+
+      {/* ── Tools panel ── */}
+      {showTools && <ToolsPanel onClose={() => setShowTools(false)} panelStyle={toolsPanelStyle} />}
 
       {/* ── Connection panel (same context) ── */}
       {showConnection && <ConnectionPanel onClose={() => setShowConnection(false)} panelStyle={connectionPanelStyle} />}
@@ -1162,6 +1183,71 @@ const MODEL_PARAMS_CONFIG: Array<{
   { key: "repeat_penalty", label: "Repeat Penalty", desc: "Penalize repeated tokens", min: 1, max: 2, step: 0.05, format: (v) => v.toFixed(2) },
   { key: "num_predict", label: "Max Tokens", desc: "Max response length (-1 = unlimited)", min: -1, max: 8192, step: 1, format: (v) => v === -1 ? "∞" : String(v) },
 ];
+
+const TOOL_LABELS: Record<keyof ToolsConfig["tools"], string> = {
+  get_namespace_detail: "Namespace detail",
+  get_pod_detail: "Pod detail",
+  get_resource_events: "Resource events",
+  get_deployment_detail: "Deployment detail",
+  get_nodes: "Node list",
+};
+
+const ToolsPanel = observer(({ onClose, panelStyle }: { onClose: () => void; panelStyle: React.CSSProperties }) => {
+  const tc = chatStore.toolsConfig;
+
+  const onGlobalToggle = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    chatStore.setToolsConfig({ ...tc, enabled: e.target.checked });
+  }, [tc]);
+
+  const onToolToggle = useCallback((toolName: keyof ToolsConfig["tools"]) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      chatStore.setToolsConfig({ ...tc, tools: { ...tc.tools, [toolName]: e.target.checked } });
+    }, [tc]);
+
+  return (
+    <>
+      <div style={pS.overlay} onClick={onClose} />
+      <div style={panelStyle}>
+        <div style={pS.head}>
+          <h4 style={pS.title}>🔧 K8s Tool Calling</h4>
+          <button style={pS.close} onClick={onClose}>✕</button>
+        </div>
+        <span style={pS.paramDesc}>
+          Tools give the model drill-down access to specific resources.
+          Disable globally for small models that loop on tool calls.
+        </span>
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--textColorPrimary, #cdd6f4)", cursor: "pointer" }}>
+          <input type="checkbox" checked={tc.enabled} onChange={onGlobalToggle} />
+          Enable tool calling
+        </label>
+        <div style={{ borderTop: "1px solid var(--borderColor, #313244)", paddingTop: "6px", display: "flex", flexDirection: "column", gap: "6px" }}>
+          {(Object.keys(TOOL_LABELS) as Array<keyof ToolsConfig["tools"]>).map((toolName) => (
+            <label
+              key={toolName}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                paddingLeft: "10px",
+                fontSize: "11px",
+                color: tc.enabled ? "var(--textColorPrimary, #cdd6f4)" : "var(--textColorSecondary, #a6adc8)",
+                cursor: tc.enabled ? "pointer" : "not-allowed",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={tc.tools[toolName]}
+                disabled={!tc.enabled}
+                onChange={onToolToggle(toolName)}
+              />
+              {TOOL_LABELS[toolName]}
+            </label>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+});
 
 const ModelParamsPanel = observer(({ onClose, panelStyle }: { onClose: () => void; panelStyle: React.CSSProperties }) => {
   const params = chatStore.modelParams;

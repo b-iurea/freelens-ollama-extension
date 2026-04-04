@@ -250,6 +250,7 @@ RULES:
 - Analyse the LIVE cluster data below FIRST before drawing conclusions.
 - NEVER provide kubectl commands, YAML manifests, or shell scripts unless the user EXPLICITLY asks for them.
 - Prefix any mutating action recommendation with ⚠️ RISK: low|medium|high.
+- Tools are only available for drill-down on specific resources NOT already detailed in the LIVE CLUSTER CONTEXT below. Do NOT call tools if the answer is already visible in the context. Do NOT call multiple tools in sequence unless each new tool result reveals a previously unknown resource. If uncertain, answer from context first.
 `;
 
     if (!ctx) {
@@ -674,7 +675,7 @@ RULES:
       ctx: import("../../common/types").ClusterContext,
     ) => string,
   ): AsyncGenerator<string, void, unknown> {
-    const MAX_TOOL_ROUNDS = 4;
+    const MAX_TOOL_ROUNDS = 2;
     this.lastStats = null;
 
     const messages: ApiMessage[] = [...assembledMessages];

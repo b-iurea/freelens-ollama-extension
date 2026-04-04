@@ -8,6 +8,8 @@
 
 import React, { useCallback, useState } from "react";
 import { ChatStore } from "../stores/chat-store";
+import { DEFAULT_TOOLS_CONFIG } from "../../common/types";
+import type { ToolsConfig } from "../../common/types";
 
 const chatStore = ChatStore.getInstance();
 
@@ -52,6 +54,24 @@ const sty = {
     color: "var(--textColorPrimary)",
     cursor: "pointer",
   },
+  checkboxIndented: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    fontSize: "13px",
+    color: "var(--textColorPrimary)",
+    cursor: "pointer",
+    paddingLeft: "20px",
+  },
+  checkboxDisabled: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    fontSize: "13px",
+    color: "var(--textColorSecondary)",
+    cursor: "not-allowed",
+    paddingLeft: "20px",
+  },
   divider: {
     border: "none",
     borderTop: "1px solid var(--borderColor)",
@@ -59,9 +79,22 @@ const sty = {
   },
 };
 
+const TOOL_LABELS: Record<keyof ToolsConfig["tools"], string> = {
+  get_namespace_detail: "Namespace detail",
+  get_pod_detail: "Pod detail",
+  get_resource_events: "Resource events",
+  get_deployment_detail: "Deployment detail",
+  get_nodes: "Node list",
+};
+
 export function SrePreferencesInput() {
   const [endpoint, setEndpoint] = useState(chatStore.ollamaEndpoint);
   const [autoRefresh, setAutoRefresh] = useState(chatStore.autoRefreshContext);
+  const [toolsConfig, setToolsConfigState] = useState<ToolsConfig>(() => ({
+    ...DEFAULT_TOOLS_CONFIG,
+    ...chatStore.toolsConfig,
+    tools: { ...DEFAULT_TOOLS_CONFIG.tools, ...chatStore.toolsConfig?.tools },
+  }));
 
   const onEndpointChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -74,6 +107,22 @@ export function SrePreferencesInput() {
     setAutoRefresh(val);
     chatStore.setAutoRefreshContext(val);
   }, []);
+
+  const onToolsEnabledChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const updated: ToolsConfig = { ...toolsConfig, enabled: e.target.checked };
+    setToolsConfigState(updated);
+    chatStore.setToolsConfig(updated);
+  }, [toolsConfig]);
+
+  const onSingleToolChange = useCallback((toolName: keyof ToolsConfig["tools"]) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const updated: ToolsConfig = {
+        ...toolsConfig,
+        tools: { ...toolsConfig.tools, [toolName]: e.target.checked },
+      };
+      setToolsConfigState(updated);
+      chatStore.setToolsConfig(updated);
+    }, [toolsConfig]);
 
   return (
     <div style={sty.container}>
@@ -109,6 +158,39 @@ export function SrePreferencesInput() {
           and events before each response. Model selection, parameters, and connection
           testing are available directly in the chat header.
         </div>
+      </div>
+
+      <hr style={sty.divider} />
+
+      <div style={sty.section}>
+        <label style={sty.label}>K8s Tool Calling</label>
+        <div style={sty.sublabel}>
+          Tools let the assistant drill down into specific resources on demand.
+          Disable globally for small models that loop on tool calls, or selectively
+          disable individual tools.
+        </div>
+        <label style={sty.checkbox}>
+          <input
+            type="checkbox"
+            checked={toolsConfig.enabled}
+            onChange={onToolsEnabledChange}
+          />
+          Enable tool calling
+        </label>
+        {(Object.keys(TOOL_LABELS) as Array<keyof ToolsConfig["tools"]>).map((toolName) => (
+          <label
+            key={toolName}
+            style={toolsConfig.enabled ? sty.checkboxIndented : sty.checkboxDisabled}
+          >
+            <input
+              type="checkbox"
+              checked={toolsConfig.tools[toolName]}
+              disabled={!toolsConfig.enabled}
+              onChange={onSingleToolChange(toolName)}
+            />
+            {TOOL_LABELS[toolName]}
+          </label>
+        ))}
       </div>
     </div>
   );

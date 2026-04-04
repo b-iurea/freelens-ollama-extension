@@ -203,6 +203,30 @@ export const DEFAULT_MODEL_PARAMS: OllamaModelParams = {
   repeat_penalty: 1.1,
 };
 
+/** Per-tool toggle configuration for the K8s tool-calling loop. */
+export interface ToolsConfig {
+  /** Master switch — when false, no tools are passed to Ollama regardless of individual toggles. */
+  enabled: boolean;
+  tools: {
+    get_namespace_detail: boolean;
+    get_pod_detail: boolean;
+    get_resource_events: boolean;
+    get_deployment_detail: boolean;
+    get_nodes: boolean;
+  };
+}
+
+export const DEFAULT_TOOLS_CONFIG: ToolsConfig = {
+  enabled: true,
+  tools: {
+    get_namespace_detail: true,
+    get_pod_detail: true,
+    get_resource_events: true,
+    get_deployment_detail: true,
+    get_nodes: true,
+  },
+};
+
 export interface OllamaChatRequest {
   model: string;
   messages: ApiMessage[];
