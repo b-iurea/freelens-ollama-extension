@@ -18,6 +18,7 @@ import type {
   OllamaTool,
 } from "../../../common/types";
 import { groupEventsByReason } from "./k8s-compressor";
+import { fetchPodLogs } from "../k8s-context-service";
 
 /* ─── Tool schema definitions ───────────────────────────────────────────── */
 
@@ -107,6 +108,73 @@ export const K8S_TOOLS: OllamaTool[] = [
         type: "object",
         required: [],
         properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_pod_logs",
+      description:
+        "Fetch the last 30 log lines from a specific container in a pod. " +
+        "IMPORTANT: This tool contains sensitive runtime data. You MUST explain why you need the logs " +
+        "before calling this tool. State what you have already found and what you expect the logs to confirm. " +
+        "Design your analysis to be useful even if the user denies the request. " +
+        "Only call this when you have already analyzed all context (owner, resources, volumes, missing refs) " +
+        "and the logs are the final missing piece.",
+      parameters: {
+        type: "object",
+        required: ["name", "namespace", "container"],
+        properties: {
+          name: { type: "string", description: "Pod name." },
+          namespace: { type: "string", description: "Pod namespace." },
+          container: { type: "string", description: "Container name within the pod." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_resource_chain",
+      description:
+        "Get the full cause/effect relationship chain for an anomalous pod: owner controller, " +
+        "volumes (PVC status), missing Secrets/ConfigMaps, HPA, service endpoint count, " +
+        "and Ingress chain. Use this when you see an anomalous pod and want to understand " +
+        "what upstream or downstream resources are involved.",
+      parameters: {
+        type: "object",
+        required: ["name", "namespace"],
+        properties: {
+          name: { type: "string", description: "Pod name." },
+          namespace: { type: "string", description: "Pod namespace." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_resources",
+      description:
+        "List all Kubernetes resources of a specific kind across the cluster, " +
+        "optionally filtered to a single namespace. " +
+        "Supported kinds: pods, deployments, services, nodes, namespaces. " +
+        "For pods, the response includes each pod's container names so you can use them with get_pod_logs. " +
+        "Use this for full inventory when the system context only shows a summary.",
+      parameters: {
+        type: "object",
+        required: ["kind"],
+        properties: {
+          kind: {
+            type: "string",
+            description: "Resource kind: pods | deployments | services | nodes | namespaces",
+          },
+          namespace: {
+            type: "string",
+            description: "Optional namespace filter. Omit to list across all namespaces.",
+          },
+        },
       },
     },
   },
@@ -313,12 +381,176 @@ function execGetNodes(ctx: ClusterContext): string {
   return out;
 }
 
-/* ─── Public dispatcher ─────────────────────────────────────────────────── */
+function execGetResourceChain(name: string, namespace: string, ctx: ClusterContext): string {
+  const pod = ctx.pods.find(
+    (p) => p.name === name && (p.namespace ?? "default") === namespace,
+  );
+  if (!pod) {
+    return `RESOURCE CHAIN: ${namespace}/${name}\n  (pod not found in current context)\n`;
+  }
+
+  let out = `RESOURCE CHAIN: ${namespace}/${name}  ${pod.status ?? "?"}\n`;
+
+  // Richer per-container fields
+  if (pod.node) out += `  node: ${pod.node}\n`;
+  if (pod.containers && pod.containers.length > 0) {
+    out += `\nCONTAINERS:\n`;
+    for (const c of pod.containers) {
+      const kind = c.isMain ? "main" : "sidecar";
+      const r = c.restarts != null ? ` · restarts=${c.restarts}` : "";
+      const e = c.exitCode != null ? ` · exit=${c.exitCode}` : "";
+      const reason = c.reason ? ` · ${c.reason}` : "";
+      out += `  ${c.name} (${kind})  ${c.state}${r}${e}${reason}\n`;
+      if (c.image) out += `    image: ${c.image}\n`;
+      if (c.resources) {
+        const { reqCpu, reqMem, limCpu, limMem } = c.resources;
+        const req = [reqCpu && `cpu:${reqCpu}`, reqMem && `mem:${reqMem}`].filter(Boolean).join(",");
+        const lim = [limCpu && `cpu:${limCpu}`, limMem && `mem:${limMem}`].filter(Boolean).join(",");
+        if (req || lim) out += `    resources: req=${req || "?"} lim=${lim || "?"}\n`;
+      }
+      if (c.probes) {
+        const parts = [
+          c.probes.liveness && `liveness=${c.probes.liveness}`,
+          c.probes.readiness && `readiness=${c.probes.readiness}`,
+        ].filter(Boolean).join(" ");
+        if (parts) out += `    probes: ${parts}\n`;
+      }
+    }
+  }
+
+  const rel = pod.relations;
+  if (!rel) {
+    out += `\n  (relationship data not available — context may be stale)\n`;
+    return out;
+  }
+
+  // Owner controller
+  if (rel.ownerRef) {
+    const r = rel.ownerRef;
+    const repPart = r.replicas ? `  replicas=${r.replicas}` : "";
+    const stratPart = r.strategy ? `  strategy=${r.strategy}` : "";
+    const [ready, desired] = (r.replicas ?? "1/1").split("/").map(Number);
+    const flag = Number.isFinite(ready) && Number.isFinite(desired) && desired > 0 && ready < desired ? " ⚠" : "";
+    out += `\nOWNER: ${r.kind}/${r.name}${repPart}${stratPart}${flag}\n`;
+  }
+
+  // HPA
+  if (rel.hpa) {
+    const h = rel.hpa;
+    const cpuPart = h.cpuPercent != null ? `  CPU:${h.cpuPercent}%${h.cpuPercent >= 80 ? " ⚠" : ""}` : "";
+    out += `HPA: ${h.name}  min=${h.minReplicas} max=${h.maxReplicas} current=${h.currentReplicas}${cpuPart}\n`;
+  }
+
+  // PVCs
+  if (rel.pvcs.length > 0) {
+    out += `\nVOLUMES:\n`;
+    for (const pvc of rel.pvcs) {
+      const flag = pvc.phase !== "Bound" ? " ⚠" : " ✓";
+      out += `  pvc/${pvc.name}  [${pvc.phase}]${flag}\n`;
+    }
+  }
+
+  // Present refs
+  if (rel.presentRefs.length > 0) {
+    out += `\nPRESENT REFS:\n`;
+    for (const r of rel.presentRefs) {
+      out += `  ${r.kind}/${r.name}  [${r.refType}] ✓\n`;
+    }
+  }
+
+  // Missing refs — the most actionable info
+  if (rel.missingRefs.length > 0) {
+    out += `\nMISSING REFS ⚠:\n`;
+    for (const r of rel.missingRefs) {
+      out += `  ${r.kind}/${r.name}  [${r.refType}] MISSING ⚠\n`;
+    }
+  }
+
+  // Service endpoints
+  if (rel.serviceEndpoints && rel.serviceEndpoints.length > 0) {
+    out += `\nSERVICES:\n`;
+    for (const s of rel.serviceEndpoints) {
+      out += `  ${s.serviceName} → ${s.endpointCount === 0 ? "0 endpoints ⚠" : `${s.endpointCount} endpoints`}\n`;
+    }
+  }
+
+  // Ingress chain
+  if (rel.ingressChain && rel.ingressChain.length > 0) {
+    out += `\nINGRESS:\n`;
+    for (const i of rel.ingressChain) {
+      out += `  ${i.ingressName} → ${i.serviceName}\n`;
+    }
+  }
+
+  // Helm release
+  if (rel.helmRelease) {
+    out += `\nHELM RELEASE: ${rel.helmRelease}\n`;
+  }
+
+  return out;
+}
+
+function execListResources(kind: string, namespace: string | undefined, ctx: ClusterContext): string {
+  const ns = namespace?.trim() || undefined;
+  const k = kind.trim().toLowerCase();
+
+  switch (k) {
+    case "pods": {
+      const items = ns ? ctx.pods.filter((p) => (p.namespace ?? "default") === ns) : ctx.pods;
+      if (!items.length) return `PODS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `PODS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const p of items) {
+        const prefix = ns ? "" : `${p.namespace ?? "default"}/`;
+        const cNames = p.containers?.map((c) => c.name).join(", ");
+        const flag = (p.status ?? "") !== "Running" && (p.status ?? "") !== "Completed" && (p.status ?? "") !== "" ? " ⚠" : "";
+        out += `  ${prefix}${p.name}  ${p.status ?? "?"}  ready=${p.ready ?? "?"}${cNames ? `  containers=[${cNames}]` : ""}${flag}\n`;
+      }
+      return out;
+    }
+    case "deployments": {
+      const items = ns ? ctx.deployments.filter((d) => (d.namespace ?? "default") === ns) : ctx.deployments;
+      if (!items.length) return `DEPLOYMENTS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `DEPLOYMENTS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const d of items) {
+        const prefix = ns ? "" : `${d.namespace ?? "default"}/`;
+        const [ready, desired] = (d.replicas ?? "0/0").split("/").map(Number);
+        const flag = Number.isFinite(ready) && Number.isFinite(desired) && desired > 0 && ready < desired ? " ⚠" : "";
+        out += `  ${prefix}${d.name}  replicas=${d.replicas ?? "?"}${flag}\n`;
+      }
+      return out;
+    }
+    case "services": {
+      const items = ns ? ctx.services.filter((s) => (s.namespace ?? "default") === ns) : ctx.services;
+      if (!items.length) return `SERVICES${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `SERVICES${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const s of items) {
+        const prefix = ns ? "" : `${s.namespace ?? "default"}/`;
+        out += `  ${prefix}${s.name}  type=${s.status ?? "ClusterIP"}\n`;
+      }
+      return out;
+    }
+    case "nodes":
+      return execGetNodes(ctx);
+    case "namespaces": {
+      if (!ctx.namespaces.length) return "NAMESPACES:\n  (none)\n";
+      let out = `NAMESPACES (${ctx.namespaces.length}):\n`;
+      for (const name of ctx.namespaces) out += `  ${name}\n`;
+      return out;
+    }
+    default:
+      return `list_resources: unsupported kind "${kind}". Supported: pods, deployments, services, nodes, namespaces`;
+  }
+}
 
 /**
  * Execute a named K8s tool against the live ClusterContext.
  * Returns a compact plain-text result suitable for an Ollama tool-result message.
- * Never performs API calls — operates entirely on in-memory data.
+ *
+ * NOTE: `get_pod_logs` is intentionally NOT handled here — it requires async
+ * execution and human-in-the-loop approval. It is intercepted by chat-store.ts
+ * before reaching this function.
+ * Never performs additional API calls — operates entirely on in-memory data,
+ * except for `get_pod_logs` which is handled externally.
  */
 export function executeK8sTool(
   name: string,
@@ -337,10 +569,47 @@ export function executeK8sTool(
         return execGetDeploymentDetail(String(args.name ?? ""), String(args.namespace ?? ""), ctx);
       case "get_nodes":
         return execGetNodes(ctx);
+      case "get_resource_chain":
+        return execGetResourceChain(String(args.name ?? ""), String(args.namespace ?? ""), ctx);
+      case "list_resources":
+        return execListResources(String(args.kind ?? ""), args.namespace ? String(args.namespace) : undefined, ctx);
+      case "get_pod_logs":
+        // Should have been intercepted by chat-store HiL flow before reaching here
+        return `get_pod_logs: requires user approval — not executed via sync dispatcher`;
       default:
         return `Unknown tool: ${name}`;
     }
   } catch (e: any) {
     return `Tool error (${name}): ${e?.message ?? String(e)}`;
+  }
+}
+
+/**
+ * Execute `get_pod_logs` asynchronously after user approval.
+ * Separated from executeK8sTool because it requires an API call and async/await.
+ */
+export async function executePodLogsApproved(
+  args: Record<string, string>,
+  ctx: ClusterContext,
+): Promise<string> {
+  const { name, namespace, container } = args;
+  if (!name || !namespace || !container) {
+    return `get_pod_logs: missing required args (name=${name}, namespace=${namespace}, container=${container})`;
+  }
+  const pod = ctx.pods.find(
+    (p) => p.name === name && (p.namespace ?? "default") === namespace,
+  );
+  if (!pod) {
+    return `get_pod_logs: pod ${namespace}/${name} not found in context`;
+  }
+  try {
+    const { Renderer } = await import("@freelensapp/extensions");
+    const podsApi = (Renderer.K8sApi as any)?.podsApi;
+    if (!podsApi) return `get_pod_logs: podsApi not available`;
+    const logs = await fetchPodLogs(podsApi, name, namespace, container);
+    if (!logs) return `get_pod_logs: no logs available for ${namespace}/${name}/${container}`;
+    return `LOGS [${namespace}/${name}/${container}]:\n${logs}`;
+  } catch (e: any) {
+    return `get_pod_logs error: ${e?.message ?? String(e)}`;
   }
 }

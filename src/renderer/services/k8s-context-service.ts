@@ -14,6 +14,7 @@
 import { Renderer } from "@freelensapp/extensions";
 import type {
   ClusterContext,
+  PodRelations,
 } from "../../common/types";
 import { extractContainerSummaries } from "./context/k8s-compressor";
 
@@ -105,6 +106,328 @@ function cleanLabels(obj: any): Record<string, string> | undefined {
 // No cap on pods/deployments/services — compressForPrompt() handles token budget.
 // Only events are capped here; groupEventsByReason() further reduces them to ≤20 groups.
 const MAX_EVENTS = 60;
+
+/* ─── Pod log helpers ────────────────────────────────────────────────────── */
+
+const LOG_SIGNAL_RE = /error|fatal|panic|exception|warn|failed|traceback|critical|oom|killed|segfault|abort|stack trace/i;
+const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.,\d]*Z?\s*/;
+
+/**
+ * Compress raw log text: strip timestamps, deduplicate repeated lines,
+ * keep only lines containing diagnostic signals, cap at 25 lines.
+ */
+export function compressLogs(raw: string): string {
+  const lines = raw.split("\n").map((l) => l.replace(TIMESTAMP_RE, "").trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const filtered: string[] = [];
+  for (const line of lines) {
+    if (seen.has(line)) continue;
+    seen.add(line);
+    if (LOG_SIGNAL_RE.test(line)) {
+      filtered.push(line);
+      if (filtered.length >= 25) break;
+    }
+  }
+  // If no signal lines found fall back to last 10 lines (the crash is likely at the end)
+  if (filtered.length === 0) {
+    return lines.slice(-10).join("\n");
+  }
+  return filtered.join("\n");
+}
+
+/**
+ * Fetch the last N log lines from a terminated/crashing container.
+ * Uses `previous=true` to read the crashed instance, not the restarting one.
+ * Called ONLY after explicit user approval in the HiL flow.
+ */
+export async function fetchPodLogs(
+  podsApi: any,
+  name: string,
+  namespace: string,
+  container: string,
+): Promise<string | null> {
+  try {
+    const logText = await podsApi.getLogs(
+      { name, namespace },
+      { container, tailLines: 30, previous: true },
+    );
+    if (typeof logText !== "string" || !logText.trim()) return null;
+    return compressLogs(logText);
+  } catch {
+    // If `previous=true` fails (container never had a previous run), try current
+    try {
+      const logText = await podsApi.getLogs(
+        { name, namespace },
+        { container, tailLines: 30 },
+      );
+      if (typeof logText !== "string" || !logText.trim()) return null;
+      return compressLogs(logText);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/* ─── Relationship resolver ──────────────────────────────────────────────── */
+
+/**
+ * Render a probe spec into a compact string: "httpGet:/path:port" or "exec:cmd".
+ */
+function renderProbe(probe: any): string | undefined {
+  if (!probe) return undefined;
+  if (probe.httpGet) {
+    const path = probe.httpGet.path ?? "/";
+    const port = probe.httpGet.port ?? "";
+    return `httpGet:${path}:${port}`;
+  }
+  if (probe.tcpSocket) return `tcpSocket:${probe.tcpSocket.port ?? ""}`;
+  if (probe.exec?.command) return `exec:${probe.exec.command.join(" ").slice(0, 40)}`;
+  return undefined;
+}
+
+/**
+ * Resolve the full relationship graph for one anomalous pod.
+ * Pure in-memory — all data comes from already-fetched API responses.
+ * Never fetches Secret/ConfigMap values — only checks name existence.
+ */
+export function resolveRelations(
+  rawPod: any,
+  allDeployments: any[],
+  allServices: any[],
+  allIngresses: any[],
+  allHpas: any[],
+  allPvcs: any[],
+  secretNames: Set<string>,
+  configMapNames: Set<string>,
+  /** The namespace currently being observed — used as fallback when metadata.namespace is absent. */
+  contextNamespace?: string,
+): PodRelations {
+  const podNs: string =
+    rawPod.getNs?.() ?? rawPod.metadata?.namespace ?? rawPod.namespace ?? contextNamespace ?? "default";
+  const podMeta = rawPod.metadata ?? rawPod;
+  const podLabels: Record<string, string> = podMeta.labels ?? rawPod.labels ?? {};
+
+  const relations: PodRelations = {
+    pvcs: [],
+    missingRefs: [],
+    presentRefs: [],
+  };
+
+  // ── 1. Owner controller ──
+  const ownerRef = (podMeta.ownerReferences ?? [])[0];
+  if (ownerRef) {
+    let ownerKind: string = ownerRef.kind ?? "Unknown";
+    let ownerName: string = ownerRef.name ?? "unknown";
+
+    // ownerRef kind=ReplicaSet → walk up to the Deployment
+    if (ownerKind === "ReplicaSet") {
+      const dep = allDeployments.find((d) => {
+        const dNs = d.getNs?.() ?? d.metadata?.namespace ?? d.namespace ?? "default";
+        if (dNs !== podNs) return false;
+        const selector: Record<string, string> = d.spec?.selector?.matchLabels ?? {};
+        return Object.entries(selector).every(([k, v]) => podLabels[k] === v);
+      });
+      if (dep) {
+        ownerKind = "Deployment";
+        ownerName = dep.getName?.() ?? dep.metadata?.name ?? dep.name ?? ownerName;
+        const ready = dep.status?.readyReplicas ?? 0;
+        const desired = dep.spec?.replicas ?? 0;
+        relations.ownerRef = {
+          kind: ownerKind,
+          name: ownerName,
+          replicas: `${ready}/${desired}`,
+          strategy: dep.spec?.strategy?.type,
+        };
+      }
+    } else {
+      // StatefulSet or DaemonSet — ownerRef points directly
+      relations.ownerRef = { kind: ownerKind, name: ownerName };
+    }
+  } else {
+    // No ownerRef — try deployment label selector matching directly
+    const dep = allDeployments.find((d) => {
+      const dNs = d.getNs?.() ?? d.metadata?.namespace ?? d.namespace ?? "default";
+      if (dNs !== podNs) return false;
+      const selector: Record<string, string> = d.spec?.selector?.matchLabels ?? {};
+      if (Object.keys(selector).length === 0) return false;
+      return Object.entries(selector).every(([k, v]) => podLabels[k] === v);
+    });
+    if (dep) {
+      const ready = dep.status?.readyReplicas ?? 0;
+      const desired = dep.spec?.replicas ?? 0;
+      relations.ownerRef = {
+        kind: "Deployment",
+        name: dep.getName?.() ?? dep.metadata?.name ?? dep.name ?? "unknown",
+        replicas: `${ready}/${desired}`,
+        strategy: dep.spec?.strategy?.type,
+      };
+    }
+  }
+
+  // ── 2. Volumes → PVCs and ConfigMaps ──
+  for (const vol of rawPod.spec?.volumes ?? []) {
+    if (vol.persistentVolumeClaim?.claimName) {
+      const claimName: string = vol.persistentVolumeClaim.claimName;
+      const pvc = allPvcs.find(
+        (p) =>
+          (p.getName?.() ?? p.metadata?.name ?? p.name) === claimName &&
+          (p.getNs?.() ?? p.metadata?.namespace ?? p.namespace ?? "default") === podNs,
+      );
+      relations.pvcs.push({ name: claimName, phase: pvc?.status?.phase ?? "Unknown" });
+    }
+    if (vol.configMap?.name) {
+      const cmName: string = vol.configMap.name;
+      if (configMapNames.has(`${podNs}/${cmName}`)) {
+        relations.presentRefs.push({ kind: "ConfigMap", name: cmName, refType: "volume" });
+      } else {
+        relations.missingRefs.push({ kind: "ConfigMap", name: cmName, refType: "volume" });
+      }
+    }
+  }
+
+  // ── 3. Container env / envFrom refs ──
+  for (const container of rawPod.spec?.containers ?? []) {
+    for (const env of container.env ?? []) {
+      if (env.valueFrom?.secretKeyRef?.name) {
+        const sName: string = env.valueFrom.secretKeyRef.name;
+        if (secretNames.has(`${podNs}/${sName}`)) {
+          relations.presentRefs.push({ kind: "Secret", name: sName, refType: "env" });
+        } else {
+          relations.missingRefs.push({ kind: "Secret", name: sName, refType: "env" });
+        }
+      }
+      if (env.valueFrom?.configMapKeyRef?.name) {
+        const cmName: string = env.valueFrom.configMapKeyRef.name;
+        if (configMapNames.has(`${podNs}/${cmName}`)) {
+          relations.presentRefs.push({ kind: "ConfigMap", name: cmName, refType: "env" });
+        } else {
+          relations.missingRefs.push({ kind: "ConfigMap", name: cmName, refType: "env" });
+        }
+      }
+    }
+    for (const envFrom of container.envFrom ?? []) {
+      if (envFrom.secretRef?.name) {
+        const sName: string = envFrom.secretRef.name;
+        if (secretNames.has(`${podNs}/${sName}`)) {
+          relations.presentRefs.push({ kind: "Secret", name: sName, refType: "envFrom" });
+        } else {
+          relations.missingRefs.push({ kind: "Secret", name: sName, refType: "envFrom" });
+        }
+      }
+      if (envFrom.configMapRef?.name) {
+        const cmName: string = envFrom.configMapRef.name;
+        if (configMapNames.has(`${podNs}/${cmName}`)) {
+          relations.presentRefs.push({ kind: "ConfigMap", name: cmName, refType: "envFrom" });
+        } else {
+          relations.missingRefs.push({ kind: "ConfigMap", name: cmName, refType: "envFrom" });
+        }
+      }
+    }
+  }
+
+  // ── 4. imagePullSecrets ──
+  for (const ips of rawPod.spec?.imagePullSecrets ?? []) {
+    if (ips.name) {
+      const sName: string = ips.name;
+      if (secretNames.has(`${podNs}/${sName}`)) {
+        relations.presentRefs.push({ kind: "Secret", name: sName, refType: "imagePullSecret" });
+      } else {
+        relations.missingRefs.push({ kind: "Secret", name: sName, refType: "imagePullSecret" });
+      }
+    }
+  }
+
+  // ── 5. Service → pod endpoint matching ──
+  const matchingServices = allServices.filter((svc) => {
+    const svcNs = svc.getNs?.() ?? svc.metadata?.namespace ?? svc.namespace ?? "default";
+    if (svcNs !== podNs) return false;
+    const selector: Record<string, string> = svc.spec?.selector ?? {};
+    if (Object.keys(selector).length === 0) return false;
+    return Object.entries(selector).every(([k, v]) => podLabels[k] === v);
+  });
+  if (matchingServices.length > 0) {
+    relations.serviceEndpoints = matchingServices.map((svc) => {
+      const svcName = svc.getName?.() ?? svc.metadata?.name ?? svc.name ?? "unknown";
+      // We don't fetch Endpoints here; report 0 as a conservative signal — the tool provides detail
+      return { serviceName: svcName, endpointCount: 0 };
+    });
+  }
+
+  // ── 6. Ingress → Service chain ──
+  for (const ing of allIngresses) {
+    const ingNs = ing.getNs?.() ?? ing.metadata?.namespace ?? ing.namespace ?? "default";
+    const ingName = ing.getName?.() ?? ing.metadata?.name ?? ing.name ?? "unknown";
+    if (ingNs !== podNs) continue;
+    for (const rule of ing.spec?.rules ?? []) {
+      for (const path of rule.http?.paths ?? []) {
+        // networking.k8s.io/v1 format
+        const svcName: string =
+          path.backend?.service?.name ??
+          path.backend?.serviceName ??  // extensions/v1beta1 format
+          "";
+        if (svcName && matchingServices.some((s) => (s.getName?.() ?? s.metadata?.name ?? s.name) === svcName)) {
+          if (!relations.ingressChain) relations.ingressChain = [];
+          relations.ingressChain.push({
+            ingressName: ingName,
+            serviceName: svcName,
+          });
+        }
+      }
+    }
+
+    // TLS secrets
+    for (const tls of ing.spec?.tls ?? []) {
+      if (tls.secretName) {
+        const sName: string = tls.secretName;
+        if (!secretNames.has(`${podNs}/${sName}`)) {
+          relations.missingRefs.push({ kind: "Secret", name: sName, refType: "ingressTLS" });
+        }
+      }
+    }
+  }
+
+  // ── 7. HPA targeting the owner ──
+  if (relations.ownerRef) {
+    const hpa = allHpas.find((h) => {
+      const hNs = h.getNs?.() ?? h.metadata?.namespace ?? h.namespace ?? "default";
+      if (hNs !== podNs) return false;
+      return (
+        h.spec?.scaleTargetRef?.name === relations.ownerRef!.name &&
+        h.spec?.scaleTargetRef?.kind === relations.ownerRef!.kind
+      );
+    });
+    if (hpa) {
+      const cpuMetric = (hpa.status?.currentMetrics ?? []).find(
+        (m: any) => m.type === "Resource" && m.resource?.name === "cpu",
+      );
+      const cpuPercent = cpuMetric?.resource?.current?.averageUtilization;
+      relations.hpa = {
+        name: (hpa.metadata ?? hpa).name ?? "unknown",
+        minReplicas: hpa.spec?.minReplicas ?? 1,
+        maxReplicas: hpa.spec?.maxReplicas ?? 1,
+        currentReplicas: hpa.status?.currentReplicas ?? 0,
+        cpuPercent,
+      };
+    }
+  }
+
+  // ── 8. Helm release detection ──
+  const labels: Record<string, string> = podMeta.labels ?? {};
+  const annotations: Record<string, string> = podMeta.annotations ?? {};
+  // Helm 3
+  if (annotations["meta.helm.sh/release-name"]) {
+    relations.helmRelease = annotations["meta.helm.sh/release-name"];
+  // Helm 2
+  } else if (labels["heritage"] === "Helm" && labels["release"]) {
+    relations.helmRelease = labels["release"];
+  }
+
+  // Deduplicate refs by kind+name+refType
+  relations.presentRefs = [...new Map(relations.presentRefs.map((r) => [`${r.kind}/${r.name}/${r.refType}`, r])).values()];
+  relations.missingRefs = [...new Map(relations.missingRefs.map((r) => [`${r.kind}/${r.name}/${r.refType}`, r])).values()];
+
+  return relations;
+}
 
 /* ── Anomaly-first sorting helpers ──
  * Place unhealthy resources before healthy ones so truncation preserves
@@ -210,6 +533,40 @@ export class K8sContextService {
       });
     };
 
+    /* ── Fetch extra resource types in parallel (for relationship graph) ── */
+    const [rawDeployments, rawServices, rawIngresses, rawHpas, rawPvcs, rawSecrets, rawConfigMaps] =
+      await Promise.all([
+        listViaApi(a.deploymentApi, filterNamespace),
+        listViaApi(a.serviceApi, filterNamespace),
+        listViaApi(a.ingressApi, filterNamespace),
+        listViaApi(a.hpaApi, filterNamespace),
+        listViaApi(a.pvcApi, filterNamespace),
+        listViaApi(a.secretApi, filterNamespace),
+        listViaApi(a.configMapApi, filterNamespace),
+      ]);
+
+    // Build lookup sets for Secret/ConfigMap existence checks (namespace/name keys).
+    // KubeObjects expose namespace/name via getNs()/getName(); metadata fields may be
+    // undefined on KubeObject instances, causing all keys to default to "default/..."
+    // and producing false MISSING ⚠ reports for secrets/configmaps that actually exist.
+    // When fetched with a namespace filter the API may also strip the namespace field
+    // from returned items (it's implicit) — fall back to filterNamespace in that case.
+    const nsDefault = filterNamespace ?? "default";
+    const secretNames = new Set<string>(
+      (rawSecrets ?? []).map((s: any) => {
+        const ns = s.getNs?.() ?? s.metadata?.namespace ?? s.namespace ?? nsDefault;
+        const name = s.getName?.() ?? s.metadata?.name ?? s.name ?? "";
+        return `${ns}/${name}`;
+      }),
+    );
+    const configMapNames = new Set<string>(
+      (rawConfigMaps ?? []).map((c: any) => {
+        const ns = c.getNs?.() ?? c.metadata?.namespace ?? c.namespace ?? nsDefault;
+        const name = c.getName?.() ?? c.metadata?.name ?? c.name ?? "";
+        return `${ns}/${name}`;
+      }),
+    );
+
     /* ── Pods ── */
     try {
       let pods = await listViaApi(a.podsApi, filterNamespace);
@@ -219,10 +576,12 @@ export class K8sContextService {
       }
       if (pods?.length) {
         console.log("[K8s SRE] Pods: total", pods.length, filterNamespace ? `(ns=${filterNamespace})` : "(all)");
-        // Sort unhealthy pods first so truncation preserves anomalies
         context.pods = sortPodsByAnomaly(pods).map((pod: any) => {
           const meta = pod.metadata ?? pod;
           const status: string = pod.getStatusMessage?.() ?? pod.status?.phase ?? "Unknown";
+          const isAnomaly =
+            status !== "Running" && status !== "Completed" && status !== "Succeeded";
+
           const summary: import("../../common/types").K8sResourceSummary = {
             name: pod.getName?.() ?? meta.name ?? "unknown",
             namespace: pod.getNs?.() ?? meta.namespace ?? "default",
@@ -230,11 +589,60 @@ export class K8sContextService {
             ready: getReadyCount(pod),
             labels: cleanLabels(pod),
           };
-          // Attach container detail for pods in a non-healthy state
-          if (status !== "Running" && status !== "Completed" && status !== "Succeeded") {
-            const containers = extractContainerSummaries(pod);
-            if (containers.length > 0) summary.containers = containers;
+
+          // Always extract container names (healthy pods included) so the model
+          // always knows exact container names — e.g. when calling get_pod_logs.
+          const containers = extractContainerSummaries(pod);
+          if (containers.length > 0) summary.containers = containers;
+
+          if (isAnomaly) {
+            // Richer field extraction for anomalous pods only
+            summary.node = pod.spec?.nodeName ?? undefined;
+
+            // Attach image, resources, probes, pullPolicy to each container
+            const specContainers: any[] = pod.spec?.containers ?? [];
+            if (summary.containers && specContainers.length > 0) {
+              const specMap = new Map<string, any>();
+              for (const sc of specContainers) {
+                if (sc.name) specMap.set(sc.name as string, sc);
+              }
+              for (const c of summary.containers) {
+                const spec = specMap.get(c.name);
+                if (!spec) continue;
+                c.image = spec.image ?? undefined;
+                c.imagePullPolicy = spec.imagePullPolicy ?? undefined;
+                const req = spec.resources?.requests;
+                const lim = spec.resources?.limits;
+                if (req || lim) {
+                  c.resources = {
+                    reqCpu: req?.cpu,
+                    reqMem: req?.memory,
+                    limCpu: lim?.cpu,
+                    limMem: lim?.memory,
+                  };
+                }
+                const liveness = renderProbe(spec.livenessProbe);
+                const readiness = renderProbe(spec.readinessProbe);
+                if (liveness || readiness) {
+                  c.probes = { liveness, readiness };
+                }
+              }
+            }
+
+            // Resolve relationship graph
+            summary.relations = resolveRelations(
+              pod,
+              rawDeployments ?? [],
+              rawServices ?? [],
+              rawIngresses ?? [],
+              rawHpas ?? [],
+              rawPvcs ?? [],
+              secretNames,
+              configMapNames,
+              filterNamespace,
+            );
           }
+
           return summary;
         });
       } else {
@@ -246,14 +654,11 @@ export class K8sContextService {
 
     /* ── Deployments ── */
     try {
-      let deps = await listViaApi(a.deploymentApi, filterNamespace);
-      if (!deps?.length) {
-        deps = nsFilter(getStoreItems("deployments"));
-        if (deps?.length) console.log("[K8s SRE] Deployments: fell back to store");
-      }
-      if (deps?.length) {
+      const deps = rawDeployments?.length
+        ? rawDeployments
+        : nsFilter(getStoreItems("deployments")) ?? [];
+      if (deps.length) {
         console.log("[K8s SRE] Deployments: total", deps.length, filterNamespace ? `(ns=${filterNamespace})` : "(all)");
-        // Sort deployments with replica mismatch first
         context.deployments = sortDeploymentsByAnomaly(deps).map((dep: any) => {
           const meta = dep.metadata ?? dep;
           return {
@@ -272,12 +677,10 @@ export class K8sContextService {
 
     /* ── Services ── */
     try {
-      let svcs = await listViaApi(a.serviceApi, filterNamespace);
-      if (!svcs?.length) {
-        svcs = nsFilter(getStoreItems("services"));
-        if (svcs?.length) console.log("[K8s SRE] Services: fell back to store");
-      }
-      if (svcs?.length) {
+      const svcs = rawServices?.length
+        ? rawServices
+        : nsFilter(getStoreItems("services")) ?? [];
+      if (svcs.length) {
         console.log("[K8s SRE] Services: total", svcs.length, filterNamespace ? `(ns=${filterNamespace})` : "(all)");
         context.services = svcs.map((svc: any) => {
           const meta = svc.metadata ?? svc;

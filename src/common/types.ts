@@ -72,6 +72,64 @@ export interface ContainerSummary {
   /** True when the container is NOT in the sidecar blacklist. */
   isMain: boolean;
   isSidecar: boolean;
+  /** Container image (populated for anomalous pods only). */
+  image?: string;
+  /** Resource requests/limits (populated for anomalous pods only). */
+  resources?: {
+    reqCpu?: string;
+    reqMem?: string;
+    limCpu?: string;
+    limMem?: string;
+  };
+  /** Liveness/readiness probes (populated for anomalous pods only). */
+  probes?: {
+    liveness?: string;
+    readiness?: string;
+  };
+  /** imagePullPolicy (populated for anomalous pods only). */
+  imagePullPolicy?: string;
+}
+
+/** A reference from a pod to a Secret, ConfigMap, or PVC that could not be resolved. */
+export interface MissingRef {
+  kind: "Secret" | "ConfigMap" | "PVC" | "Service";
+  name: string;
+  /** Where the reference was found: "env", "envFrom", "volume", "imagePullSecret", "selector" */
+  refType: string;
+}
+
+/** Resolved relationships for a single anomalous pod. */
+export interface PodRelations {
+  /** Owner controller (Deployment, StatefulSet, DaemonSet). */
+  ownerRef?: {
+    kind: string;
+    name: string;
+    /** ready/desired replicas from the owner controller. */
+    replicas?: string;
+    /** RollingUpdate, Recreate, etc. */
+    strategy?: string;
+  };
+  /** PVC volume claims with their current phase. */
+  pvcs: Array<{ name: string; phase: string }>;
+  /** References to Secrets/ConfigMaps/Services that do NOT exist in the cluster. */
+  missingRefs: MissingRef[];
+  /** Present references that do exist (for ✓ display). */
+  presentRefs: Array<{ kind: string; name: string; refType: string }>;
+  /** HPA targeting the pod's owner controller. */
+  hpa?: {
+    name: string;
+    minReplicas: number;
+    maxReplicas: number;
+    currentReplicas: number;
+    cpuPercent?: number;
+    memPercent?: number;
+  };
+  /** Number of service endpoints matching this pod (0 = unreachable). */
+  serviceEndpoints?: Array<{ serviceName: string; endpointCount: number }>;
+  /** Ingress → Service chain. */
+  ingressChain?: Array<{ ingressName: string; serviceName: string }>;
+  /** Helm release name if the pod's owner is managed by Helm. */
+  helmRelease?: string;
 }
 
 export interface K8sResourceSummary {
@@ -84,6 +142,27 @@ export interface K8sResourceSummary {
   ready?: string;
   /** Populated only for pods in a non-Running/non-healthy state. */
   containers?: ContainerSummary[];
+  /** Node the pod is running on (anomalous pods only). */
+  node?: string;
+  /** Resolved resource relationships (anomalous pods only, requires Phase 3 data). */
+  relations?: PodRelations;
+}
+
+/**
+ * State for a pending human-in-the-loop tool approval.
+ * Set when a tool_call for a sensitive tool (e.g. get_pod_logs) arrives in the stream.
+ * The UI renders an approve/deny prompt; on approve the tool executes; on deny a synthetic
+ * "User declined" message is sent back to the model.
+ */
+export interface ToolApprovalState {
+  /** The tool name to be executed (e.g. "get_pod_logs"). */
+  toolName: string;
+  /** Arguments the model passed to the tool. */
+  args: Record<string, string>;
+  /** The model's rationale text streamed before the tool_call. */
+  modelRationale: string;
+  /** Internal: the resolve function to call with the user's decision. */
+  resolve: (approved: boolean) => void;
 }
 
 export interface K8sEventSummary {
@@ -213,6 +292,11 @@ export interface ToolsConfig {
     get_resource_events: boolean;
     get_deployment_detail: boolean;
     get_nodes: boolean;
+    /** Requires human-in-the-loop approval before execution. */
+    get_pod_logs: boolean;
+    get_resource_chain: boolean;
+    /** List all resources of a given kind across the cluster. */
+    list_resources: boolean;
   };
 }
 
@@ -224,6 +308,9 @@ export const DEFAULT_TOOLS_CONFIG: ToolsConfig = {
     get_resource_events: true,
     get_deployment_detail: true,
     get_nodes: true,
+    get_pod_logs: true,
+    get_resource_chain: true,
+    list_resources: true,
   },
 };
 

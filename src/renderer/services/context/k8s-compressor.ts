@@ -296,6 +296,7 @@ export function compressForPrompt(
       namespaceDigests,
       anomalyPods,
       anomalyDeployments,
+      pods: ctx.pods,
       totalPods: ctx.pods.length,
       totalDeployments: ctx.deployments.length,
       totalServices: ctx.services.length,

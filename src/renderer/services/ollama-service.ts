@@ -131,6 +131,121 @@ export async function nodeRequestJson(
   return { ok: res.ok, status: res.status, data: res.ok ? JSON.parse(res.body) : null };
 }
 
+/* ─── Anomalous pod renderer ─────────────────────────────────────────────── */
+
+/**
+ * Render a single anomalous pod as a cause-chain block for the system prompt.
+ * Format matches the IMPROVEMENTS.md target layout:
+ *   [ns] pod-name  STATUS  ready=N/M
+ *     → owner:     Deployment/name  replicas=X/Y ⚠
+ *     → image:     registry/image:tag  (pullPolicy=Always)
+ *     → resources: req=cpu:X,mem:Y  lim=cpu:X,mem:Y
+ *     → probes:    readiness=httpGet:/ready:8080
+ *     → volumes:   pvc/name [Bound ✓]  configmap/name [MISSING ⚠]
+ *     → hpa:       name  min=N max=M  current=K (CPU: X% ⚠)
+ *     → service:   name → 0 endpoints ⚠
+ *     → ingress:   name → service
+ *     → helm:      release-name
+ */
+function renderAnomalousPod(p: import("../../common/types").K8sResourceSummary): string {
+  let out = `  [${p.namespace ?? "?"}] ${p.name}  ${p.status ?? "?"}  ready=${p.ready ?? "?"}`;
+  if (p.node) out += `  node=${p.node}`;
+  out += "\n";
+
+  // Containers
+  if (p.containers && p.containers.length > 0) {
+    for (const c of p.containers) {
+      const kind = c.isMain ? "main" : "sidecar";
+      const r = c.restarts != null ? ` · restarts=${c.restarts}` : "";
+      const e = c.exitCode != null ? ` · exit=${c.exitCode}` : "";
+      const reason = c.reason ? ` · ${c.reason}` : "";
+      out += `    ↳ ${c.name} (${kind})  ${c.state}${r}${e}${reason}\n`;
+      if (c.image) {
+        const pull = c.imagePullPolicy && c.imagePullPolicy !== "IfNotPresent" ? `  pullPolicy=${c.imagePullPolicy}` : "";
+        out += `       image: ${c.image}${pull}\n`;
+      }
+      if (c.resources) {
+        const { reqCpu, reqMem, limCpu, limMem } = c.resources;
+        const req = [reqCpu && `cpu:${reqCpu}`, reqMem && `mem:${reqMem}`].filter(Boolean).join(",");
+        const lim = [limCpu && `cpu:${limCpu}`, limMem && `mem:${limMem}`].filter(Boolean).join(",");
+        if (req || lim) out += `       resources: req=${req || "?"} lim=${lim || "?"}\n`;
+      }
+      if (c.probes) {
+        const parts = [
+          c.probes.liveness && `liveness=${c.probes.liveness}`,
+          c.probes.readiness && `readiness=${c.probes.readiness}`,
+        ].filter(Boolean).join(" ");
+        if (parts) out += `       probes: ${parts}\n`;
+      }
+    }
+  }
+
+  const rel = p.relations;
+  if (!rel) return out;
+
+  // Owner
+  if (rel.ownerRef) {
+    const r = rel.ownerRef;
+    const [ready, desired] = (r.replicas ?? "1/1").split("/").map(Number);
+    const flag = Number.isFinite(ready) && Number.isFinite(desired) && desired > 0 && ready < desired ? " ⚠" : "";
+    const repPart = r.replicas ? `  replicas=${r.replicas}${flag}` : "";
+    const stratPart = r.strategy ? `  strategy=${r.strategy}` : "";
+    out += `    → owner:     ${r.kind}/${r.name}${repPart}${stratPart}\n`;
+  }
+
+  // Volumes (PVCs + configmap/secret volume refs)
+  const volParts: string[] = [];
+  for (const pvc of rel.pvcs) {
+    const flag = pvc.phase !== "Bound" ? " ⚠" : " ✓";
+    volParts.push(`pvc/${pvc.name} [${pvc.phase}${flag}]`);
+  }
+  for (const ref of rel.presentRefs.filter((r) => r.refType === "volume")) {
+    volParts.push(`${ref.kind.toLowerCase()}/${ref.name} [Present ✓]`);
+  }
+  for (const ref of rel.missingRefs.filter((r) => r.refType === "volume")) {
+    volParts.push(`${ref.kind.toLowerCase()}/${ref.name} [MISSING ⚠]`);
+  }
+  if (volParts.length > 0) {
+    out += `    → volumes:   ${volParts.join("  ")}\n`;
+  }
+
+  // Missing env/envFrom/imagePullSecret refs
+  const envMissing = rel.missingRefs.filter((r) => r.refType !== "volume" && r.refType !== "ingressTLS");
+  if (envMissing.length > 0) {
+    for (const r of envMissing) {
+      out += `    → MISSING ${r.kind}: ${r.name}  [${r.refType}] ⚠\n`;
+    }
+  }
+
+  // HPA
+  if (rel.hpa) {
+    const h = rel.hpa;
+    const cpuPart = h.cpuPercent != null ? `  CPU:${h.cpuPercent}%${h.cpuPercent >= 80 ? " ⚠" : ""}` : "";
+    out += `    → hpa:       ${h.name}  min=${h.minReplicas} max=${h.maxReplicas} current=${h.currentReplicas}${cpuPart}\n`;
+  }
+
+  // Services
+  if (rel.serviceEndpoints && rel.serviceEndpoints.length > 0) {
+    for (const s of rel.serviceEndpoints) {
+      out += `    → service:   ${s.serviceName} → ${s.endpointCount === 0 ? "0 endpoints ⚠" : `${s.endpointCount} endpoints`}\n`;
+    }
+  }
+
+  // Ingress
+  if (rel.ingressChain && rel.ingressChain.length > 0) {
+    for (const i of rel.ingressChain) {
+      out += `    → ingress:   ${i.ingressName} → ${i.serviceName}\n`;
+    }
+  }
+
+  // Helm
+  if (rel.helmRelease) {
+    out += `    → helm:      ${rel.helmRelease}\n`;
+  }
+
+  return out;
+}
+
 export class OllamaService {
   private endpoint: string;
   private model: string;
@@ -239,7 +354,7 @@ export class OllamaService {
    * When clusterContext carries totalXxx fields, the context was filtered
    * by ClusterMemoryService and we annotate with "(N of M, query-relevant)".
    */
-  buildSystemPrompt(ctx?: CompressedClusterContext): string {
+  buildSystemPrompt(ctx?: CompressedClusterContext, toolsEnabled = false): string {
     let prompt = `You are an expert Kubernetes SRE assistant embedded in Freelens (a K8s IDE).
 
 ROLE: Senior SRE with deep expertise in troubleshooting, monitoring, security, performance, and reliability of Kubernetes clusters.
@@ -250,8 +365,18 @@ RULES:
 - Analyse the LIVE cluster data below FIRST before drawing conclusions.
 - NEVER provide kubectl commands, YAML manifests, or shell scripts unless the user EXPLICITLY asks for them.
 - Prefix any mutating action recommendation with ⚠️ RISK: low|medium|high.
-- Tools are only available for drill-down on specific resources NOT already detailed in the LIVE CLUSTER CONTEXT below. Do NOT call tools if the answer is already visible in the context. Do NOT call multiple tools in sequence unless each new tool result reveals a previously unknown resource. If uncertain, answer from context first.
+- ONLY state facts that are present in the LIVE CLUSTER CONTEXT or returned by a tool. NEVER fabricate pod names, log lines, kubectl output, metrics, or any other data. If the data is not available, say so.
+- For relationship or dependency diagrams you may use mermaid code blocks. For tabular data always use Markdown tables, not mermaid.
 `;
+    if (toolsEnabled) {
+      prompt += `- You have tool-calling capabilities. The Freelens runtime will execute them. Do NOT write tool names or fake tool output in your response text. Simply call the tool via the API — Freelens handles the rest.
+- Tools are only for drill-down on specific resources NOT already detailed in the LIVE CLUSTER CONTEXT. Do NOT call tools if the answer is already visible in the context. If uncertain, answer from context first.
+- \`get_pod_logs\` requires user approval. Before calling it, explain: (1) what you already found, (2) what you expect the logs to confirm. Design your analysis to be useful even if the user denies.
+`;
+    } else {
+      prompt += `- You do NOT have any tools available. Do NOT pretend to call tools, do NOT output lines like "[Tool: ...]", do NOT fabricate tool results. Answer only from the LIVE CLUSTER CONTEXT provided.
+`;
+    }
 
     if (!ctx) {
       prompt += `\n(No cluster context available yet.)\n`;
@@ -307,20 +432,23 @@ RULES:
         }
       }
 
-      // Anomalous pods with container detail
+      // Compact pod roster — healthy pods (anomalous ones get the full format below)
+      if (ctx.pods && ctx.pods.length > 0) {
+        const anomalySet = new Set((ctx.anomalyPods ?? []).map((p) => `${p.namespace}/${p.name}`));
+        const healthyPods = ctx.pods.filter((p) => !anomalySet.has(`${p.namespace}/${p.name}`));
+        if (healthyPods.length > 0) {
+          prompt += `\nPODS (${healthyPods.length} healthy):\n`;
+          for (const p of healthyPods) {
+            prompt += `  [${p.namespace ?? "?"}] ${p.name}  ${p.status ?? "?"}  ready=${p.ready ?? "?"}\n`;
+          }
+        }
+      }
+
+      // Anomalous pods with container detail + relationship chain
       if (ctx.anomalyPods && ctx.anomalyPods.length > 0) {
         prompt += `\nANOMALOUS PODS (${ctx.anomalyPods.length}):\n`;
         for (const p of ctx.anomalyPods) {
-          prompt += `  [${p.namespace ?? "?"}] ${p.name}  ${p.status ?? "?"}  ready=${p.ready ?? "?"}\n`;
-          if (p.containers && p.containers.length > 0) {
-            for (const c of p.containers) {
-              const kind = c.isMain ? "main" : "sidecar";
-              const restarts = c.restarts != null ? ` · restarts=${c.restarts}` : "";
-              const exit = c.exitCode != null ? ` · exit=${c.exitCode}` : "";
-              const reason = c.reason ? ` · ${c.reason}` : "";
-              prompt += `    ↳ ${c.name} (${kind})  ${c.state}${restarts}${exit}${reason}\n`;
-            }
-          }
+          prompt += renderAnomalousPod(p);
         }
       }
 
@@ -332,7 +460,7 @@ RULES:
         }
       }
     } else {
-      // single-namespace: all pods
+      // All pods — anomalous ones get the full chain format
       if (ctx.pods && ctx.pods.length > 0) {
         prompt += `\nPODS (${ctx.pods.length}):\n`;
         for (const p of ctx.pods) {
@@ -341,16 +469,10 @@ RULES:
             (p.status ?? "") !== "Completed" &&
             (p.status ?? "") !== "Succeeded" &&
             (p.status ?? "") !== "";
-          const flag = isAnomaly ? " ⚠" : "";
-          prompt += `  ${p.name}  ${p.status ?? "?"}  ready=${p.ready ?? "?"}${flag}\n`;
-          if (p.containers && p.containers.length > 0) {
-            for (const c of p.containers) {
-              const kind = c.isMain ? "main" : "sidecar";
-              const restarts = c.restarts != null ? ` · restarts=${c.restarts}` : "";
-              const exit = c.exitCode != null ? ` · exit=${c.exitCode}` : "";
-              const reason = c.reason ? ` · ${c.reason}` : "";
-              prompt += `    ↳ ${c.name} (${kind})  ${c.state}${restarts}${exit}${reason}\n`;
-            }
+          if (isAnomaly) {
+            prompt += renderAnomalousPod(p);
+          } else {
+            prompt += `  ${p.name}  ${p.status ?? "?"}  ready=${p.ready ?? "?"}\n`;
           }
         }
       }
@@ -673,7 +795,7 @@ RULES:
       name: string,
       args: Record<string, any>,
       ctx: import("../../common/types").ClusterContext,
-    ) => string,
+    ) => string | Promise<string>,
   ): AsyncGenerator<string, void, unknown> {
     const MAX_TOOL_ROUNDS = 2;
     this.lastStats = null;
@@ -791,7 +913,7 @@ RULES:
 
         yield `\n*[Tool: ${toolName}(${argsStr})]*\n`;
 
-        const result = executeToolFn(toolName, toolArgs, liveCtx);
+        const result = await executeToolFn(toolName, toolArgs, liveCtx);
         console.log("[K8s SRE] Tool", toolName, "→", result.length, "chars");
         messages.push({ role: "tool", content: result });
       }

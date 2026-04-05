@@ -1,0 +1,42 @@
+1. Intelligent Tool Selection (Discovery Layer)
+Invece di passare all'LLM l'intera lista dei tool disponibili (che può pesare migliaia di token), aggiungi uno strato di filtro semantico a monte.
+
+Embedding dei Tool: Crea un database vettoriale dove ogni entry è la descrizione di un tool (nome + finalità).
+
+Workflow:
+
+L'utente invia la query.
+
+Il sistema esegue una ricerca vettoriale (es. con FAISS o Pinecone) tra le descrizioni dei tool.
+
+Vengono selezionati solo i top-3 o top-5 tool più rilevanti.
+
+Solo questi tool vengono inseriti nel prompt di sistema dell'LLM.
+
+Risparmio: Passare da 100 tool a 3 può ridurre il prompt di input del 90-95%.
+
+2. Reranking (Precisione vs Volume)
+La ricerca vettoriale standard (bi-encoder) è veloce ma poco precisa. Il reranking (cross-encoder) ti permette di recuperare meno documenti ma di qualità superiore, riducendo drasticamente il numero di token necessari per il contesto.
+
+Il processo:
+
+Retrieval (Candidati): Recuperi 20-50 frammenti di testo via keyword o vector search.
+
+Rerank (Filtro): Usi un modello di reranking leggero (come BGE-Reranker o i modelli di Cohere) per valutare la pertinenza reale tra query e frammento.
+
+Selezione finale: Invii all'LLM solo i primi 3 frammenti con score elevato.
+
+Perché risparmi: Senza reranking, per essere sicuro di includere la risposta corretta, dovresti inviare 10-20 frammenti. Con un buon reranker, 2 o 3 sono sufficienti per dare una risposta accurata, risparmiando migliaia di token per ogni chiamata.
+
+3. Router Intelligente (Model Selection)
+Non tutte le query richiedono un modello "top tier" (come GPT-4o o Claude 3.5 Sonnet).
+
+Classificazione della complessità: Usa un modello piccolissimo (es. Llama 3 8B o un classificatore dedicato) per capire se la richiesta è complessa o banale.
+
+Routing:
+
+Query semplice (es. "Che ore sono?"): Esegui con un modello economico o una funzione locale.
+
+Query complessa (es. "Analizza questo bilancio"): Passa al modello avanzato.
+
+Vantaggio: Riduci drasticamente il costo per token (fino a 50x) delegando i compiti facili a modelli "low-cost".
