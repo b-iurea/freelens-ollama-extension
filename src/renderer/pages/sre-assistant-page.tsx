@@ -6,7 +6,6 @@
  */
 
 import type { Renderer } from "@freelensapp/extensions";
-import React from "react";
 import { SreChat } from "../components/sre-chat";
 
 interface SreAssistantPageProps {

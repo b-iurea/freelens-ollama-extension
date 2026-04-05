@@ -85,6 +85,9 @@ const TOOL_LABELS: Record<keyof ToolsConfig["tools"], string> = {
   get_resource_events: "Resource events",
   get_deployment_detail: "Deployment detail",
   get_nodes: "Node list",
+  get_pod_logs: "Pod logs (human-in-the-loop)",
+  get_resource_chain: "Resource chain",
+  list_resources: "List resources",
 };
 
 export function SrePreferencesInput() {

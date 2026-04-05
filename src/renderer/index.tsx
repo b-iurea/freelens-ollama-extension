@@ -4,7 +4,6 @@
  */
 
 import { Renderer } from "@freelensapp/extensions";
-import React from "react";
 import { SreAssistantPage } from "./pages/sre-assistant-page";
 import { SreIcon } from "./icons/sre-icon";
 import { SrePreferencesInput, SrePreferencesHint } from "./preferences/sre-preferences";

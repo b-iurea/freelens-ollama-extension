@@ -15,14 +15,105 @@ import { MarkdownRenderer } from "./markdown-renderer";
 
 const chatStore = ChatStore.getInstance();
 
-const SUGGESTED_QUERIES = [
-  "What's the health status of my cluster?",
-  "Are there any pods in CrashLoopBackOff?",
-  "Show me recent warning events",
-  "What deployments are not fully available?",
-  "Analyze resource usage and suggest optimizations",
-  "Check for any security concerns",
+/* ─── suggestion banks ─────────────────────────────────────────────── */
+
+/** Shown when the user is viewing all namespaces at once. */
+const CLUSTER_SUGGESTIONS = [
+  "What's the overall health status of this cluster?",
+  "Are there pods in CrashLoopBackOff across all namespaces?",
+  "Which nodes are under memory or CPU pressure?",
+  "Which deployments have unavailable replicas?",
+  "Are there pods stuck in Pending state?",
+  "Show me all recent Warning events cluster-wide",
+  "What's the workload distribution across nodes?",
+  "Identify deployments missing resource limits",
+  "Are any images using a 'latest' tag — a rollout anti-pattern?",
+  "Which pods have the most restarts cluster-wide?",
+  "Are any PersistentVolumes in Failed or Released state?",
+  "List all HPAs and their current scaling status",
+  "Check for Secrets or ConfigMaps referenced but missing",
+  "Which namespaces have no running pods?",
+  "Are there ingresses pointing to non-existent services?",
+  "Identify single points of failure across the cluster",
+  "Which services have no healthy endpoints?",
+  "Summarize this cluster for a new team member",
+  "What workloads have no PodDisruptionBudget?",
+  "Show all StatefulSets and their pod readiness",
+  "Are there any DaemonSets with missing pods on some nodes?",
+  "Which namespaces are consuming the most CPU and memory?",
+  "Are there any failed Jobs or CronJob runs?",
+  "Check for RBAC misconfigurations or overly permissive roles",
+  "Which pods are running as root or with privileged containers?",
 ];
+
+/** Shown when the user is scoped to a specific namespace. */
+const NAMESPACE_SUGGESTIONS = [
+  "What's the health of all deployments in this namespace?",
+  "Are any pods in this namespace restarting abnormally?",
+  "Show me all recent events in this namespace",
+  "Check if all referenced ConfigMaps and Secrets exist",
+  "Are there any ImagePullBackOff errors here?",
+  "Which services have no healthy endpoints in this namespace?",
+  "Analyse resource limits vs requests for workloads here",
+  "Are there deployments not fully rolled out?",
+  "Which containers have no readiness probe configured?",
+  "What ingresses are configured and what services do they target?",
+  "Show pods with non-zero exit codes or OOMKilled containers",
+  "Are any HPAs approaching their maximum replica count?",
+  "Are there stale Completed or Evicted pods to clean up?",
+  "Summarise this namespace for an on-call handoff",
+  "Check for PVC mount issues or unbound volumes",
+  "What's the network exposure — ClusterIP vs NodePort vs Ingress?",
+  "Identify pods that have been running for less than one hour",
+  "Check for liveness probe failure patterns here",
+  "Are there any DaemonSets with unavailable pods?",
+  "Show environment variable and secret injection problems",
+  "Which containers are missing CPU or memory limits?",
+  "Are there any services with no matching pod selector?",
+  "What's the average pod restart trend over the last hour?",
+  "Check for init containers that are crashing at startup",
+  "Are there any pods evicted due to resource pressure?",
+];
+
+const CAROUSEL_PAGE_SIZE = 5;
+
+function SuggestionCarousel({
+  queries,
+  onSelect,
+}: {
+  queries: string[];
+  onSelect: (q: string) => void;
+}) {
+  const [offset, setOffset] = useState(() =>
+    Math.floor(Math.random() * queries.length),
+  );
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setOffset((o) => (o + CAROUSEL_PAGE_SIZE) % queries.length);
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [queries.length]);
+
+  const page = Array.from({ length: CAROUSEL_PAGE_SIZE }, (_, i) =>
+    queries[(offset + i) % queries.length],
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
+      <div style={S.suggestions}>
+        {page.map((q) => (
+          <button key={q} style={S.sugBtn} onClick={() => onSelect(q)}>
+            {q}
+          </button>
+        ))}
+      </div>
+      <span style={{ fontSize: "10px", color: "var(--textColorSecondary, #a6adc8)", opacity: 0.45, letterSpacing: "0.02em" }}>
+        suggestions rotate every minute
+      </span>
+    </div>
+  );
+}
 
 const SRE_MODE_OPTIONS = [
   { key: "auto", label: "🧭 Auto" },
@@ -568,6 +659,7 @@ const KEYFRAMES = `
 export const SreChat = observer(() => {
   const [input, setInput] = useState("");
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -576,7 +668,7 @@ export const SreChat = observer(() => {
   const lastMsg = chatStore.lastMessage;
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatStore.messages.length, lastMsg?.content]);
+  }, [chatStore.messages.length, lastMsg?.content, chatStore.pendingToolApproval]);
 
   // connect on mount
   useEffect(() => {
@@ -629,7 +721,6 @@ export const SreChat = observer(() => {
   const connected = chatStore.isOllamaConnected;
   const ctx = chatStore.clusterContext;
   const warnCount = ctx ? ctx.events.filter((ev) => ev.type === "Warning").length : 0;
-  const quickActions = chatStore.getSuggestedActions();
   const endpointHost = extractEndpointHost(chatStore.ollamaEndpoint);
 
   const getAnchor = useCallback((el: HTMLElement): PanelAnchor => {
@@ -950,11 +1041,10 @@ export const SreChat = observer(() => {
               </p>
             )}
             <div style={S.suggestions}>
-              {SUGGESTED_QUERIES.map((q) => (
-                <button key={q} style={S.sugBtn} onClick={() => { setInput(q); taRef.current?.focus(); }}>
-                  {q}
-                </button>
-              ))}
+              <SuggestionCarousel
+                queries={chatStore.selectedNamespace === "__all__" ? CLUSTER_SUGGESTIONS : NAMESPACE_SUGGESTIONS}
+                onSelect={(q) => { setInput(q); taRef.current?.focus(); }}
+              />
             </div>
           </div>
         ) : (
@@ -962,6 +1052,33 @@ export const SreChat = observer(() => {
             {chatStore.messages.map((m) => (
               <MsgBubble key={m.id} message={m} />
             ))}
+            {chatStore.pendingToolApproval && (() => {
+              const approval = chatStore.pendingToolApproval!;
+              const isSensitive = approval.toolName === "get_pod_logs";
+              const accent = isSensitive ? "#f9e2af" : "#89b4fa";
+              const bg     = isSensitive ? "rgba(249,226,175,.07)" : "rgba(137,180,250,.07)";
+              const icon   = isSensitive ? "🔐" : "🔧";
+              const title  = isSensitive ? "Log access request" : "Tool call";
+              return (
+                <div style={S.msgRow(false)}>
+                  <div style={S.avatar(false)}>{icon}</div>
+                  <div style={{ ...S.bubble(false), border: `1px solid ${accent}`, background: bg, maxWidth: "100%" }}>
+                    <div style={{ fontWeight: 600, marginBottom: 6, color: accent, fontSize: "12px" }}>
+                      {title} — {approval.toolName}({Object.entries(approval.args).map(([k, v]) => `${k}=${v}`).join(", ")})
+                    </div>
+                    {approval.modelRationale && (
+                      <div style={{ fontSize: "12px", color: "var(--textColorSecondary, #a6adc8)", marginBottom: 10, maxHeight: 80, overflow: "hidden" }}>
+                        {approval.modelRationale.slice(-400)}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => chatStore.approvePendingTool()} style={{ padding: "5px 14px", borderRadius: 8, border: "1px solid #a6e3a1", background: "rgba(166,227,161,.15)", color: "#a6e3a1", cursor: "pointer", fontSize: "12px", fontWeight: 600 }}>✓ Approve</button>
+                      <button onClick={() => chatStore.denyPendingTool()}    style={{ padding: "5px 14px", borderRadius: 8, border: "1px solid #f38ba8", background: "rgba(243,139,168,.1)",  color: "#f38ba8", cursor: "pointer", fontSize: "12px", fontWeight: 600 }}>✗ Deny</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
             {chatStore.isLoading && chatStore.lastMessage?.role !== "assistant" && (
               <div style={S.msgRow(false)}>
                 <div style={S.avatar(false)}>🤖</div>
@@ -978,28 +1095,32 @@ export const SreChat = observer(() => {
       {/* ── Input bar ── */}
       <div style={S.inputBar}>
         {chatStore.hasMessages && (
-          <div style={{ padding: "6px 16px 0" }}>
-            <div style={S.inlineHint}>Suggested next actions</div>
-            <div style={S.quickActionsWrap}>
-              {quickActions.map((a) => (
-                <button
-                  key={a}
-                  style={S.quickActionBtn}
-                  onClick={() => {
-                    if (a.toLowerCase().includes("runbook")) {
-                      const result = chatStore.exportRunbook();
-                      setExportNotice(result.message);
-                      window.setTimeout(() => setExportNotice(null), 2400);
-                    } else {
-                      setInput(a);
-                      taRef.current?.focus();
-                    }
-                  }}
-                >
-                  {a}
-                </button>
-              ))}
+          <div style={{ padding: "4px 16px 0" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: suggestionsOpen ? 4 : 0 }}>
+              <div style={S.inlineHint}>Suggested next actions</div>
+              <button
+                onClick={() => setSuggestionsOpen((o) => !o)}
+                title={suggestionsOpen ? "Hide suggestions" : "Show suggestions"}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--textColorSecondary, #a6adc8)", fontSize: "13px", padding: "0 2px", lineHeight: 1 }}
+              >
+                {suggestionsOpen ? "▾" : "▸"}
+              </button>
             </div>
+            {suggestionsOpen && (
+              <SuggestionCarousel
+                queries={chatStore.selectedNamespace === "__all__" ? CLUSTER_SUGGESTIONS : NAMESPACE_SUGGESTIONS}
+                onSelect={(a) => {
+                  if (a.toLowerCase().includes("runbook")) {
+                    const result = chatStore.exportRunbook();
+                    setExportNotice(result.message);
+                    window.setTimeout(() => setExportNotice(null), 2400);
+                  } else {
+                    setInput(a);
+                    taRef.current?.focus();
+                  }
+                }}
+              />
+            )}
           </div>
         )}
         <div style={S.inputArea}>
@@ -1190,7 +1311,25 @@ const TOOL_LABELS: Record<keyof ToolsConfig["tools"], string> = {
   get_resource_events: "Resource events",
   get_deployment_detail: "Deployment detail",
   get_nodes: "Node list",
+  get_pod_logs: "Pod logs (HiL)",
+  get_resource_chain: "Resource chain",
+  list_resources: "List resources",
 };
+
+const TOOL_GROUPS: Array<{ label: string; tools: Array<keyof ToolsConfig["tools"]> }> = [
+  {
+    label: "Inspect",
+    tools: ["get_namespace_detail", "get_pod_detail", "get_deployment_detail", "get_resource_events", "get_resource_chain", "get_nodes"],
+  },
+  {
+    label: "List",
+    tools: ["list_resources"],
+  },
+  {
+    label: "Sensitive (HiL)",
+    tools: ["get_pod_logs"],
+  },
+];
 
 const ToolsPanel = observer(({ onClose, panelStyle }: { onClose: () => void; panelStyle: React.CSSProperties }) => {
   const tc = chatStore.toolsConfig;
@@ -1220,28 +1359,32 @@ const ToolsPanel = observer(({ onClose, panelStyle }: { onClose: () => void; pan
           <input type="checkbox" checked={tc.enabled} onChange={onGlobalToggle} />
           Enable tool calling
         </label>
-        <div style={{ borderTop: "1px solid var(--borderColor, #313244)", paddingTop: "6px", display: "flex", flexDirection: "column", gap: "6px" }}>
-          {(Object.keys(TOOL_LABELS) as Array<keyof ToolsConfig["tools"]>).map((toolName) => (
-            <label
-              key={toolName}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                paddingLeft: "10px",
-                fontSize: "11px",
-                color: tc.enabled ? "var(--textColorPrimary, #cdd6f4)" : "var(--textColorSecondary, #a6adc8)",
-                cursor: tc.enabled ? "pointer" : "not-allowed",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={tc.tools[toolName]}
-                disabled={!tc.enabled}
-                onChange={onToolToggle(toolName)}
-              />
-              {TOOL_LABELS[toolName]}
-            </label>
+        <div style={{ borderTop: "1px solid var(--borderColor, #313244)", paddingTop: "6px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          {TOOL_GROUPS.map((group) => (
+            <div key={group.label}>
+              <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "0.07em", color: "var(--textColorSecondary, #a6adc8)", textTransform: "uppercase", paddingLeft: "4px", marginBottom: "4px" }}>
+                {group.label}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                {group.tools.map((toolName) => (
+                  <label
+                    key={toolName}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      paddingLeft: "10px",
+                      fontSize: "11px",
+                      color: tc.enabled ? "var(--textColorPrimary, #cdd6f4)" : "var(--textColorSecondary, #a6adc8)",
+                      cursor: tc.enabled ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    <input type="checkbox" checked={tc.tools[toolName]} disabled={!tc.enabled} onChange={onToolToggle(toolName)} />
+                    {TOOL_LABELS[toolName]}
+                  </label>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       </div>
