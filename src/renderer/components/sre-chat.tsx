@@ -659,6 +659,7 @@ const KEYFRAMES = `
 export const SreChat = observer(() => {
   const [input, setInput] = useState("");
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1094,21 +1095,32 @@ export const SreChat = observer(() => {
       {/* ── Input bar ── */}
       <div style={S.inputBar}>
         {chatStore.hasMessages && (
-          <div style={{ padding: "6px 16px 0" }}>
-            <div style={S.inlineHint}>Suggested next actions</div>
-            <SuggestionCarousel
-              queries={chatStore.selectedNamespace === "__all__" ? CLUSTER_SUGGESTIONS : NAMESPACE_SUGGESTIONS}
-              onSelect={(a) => {
-                if (a.toLowerCase().includes("runbook")) {
-                  const result = chatStore.exportRunbook();
-                  setExportNotice(result.message);
-                  window.setTimeout(() => setExportNotice(null), 2400);
-                } else {
-                  setInput(a);
-                  taRef.current?.focus();
-                }
-              }}
-            />
+          <div style={{ padding: "4px 16px 0" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: suggestionsOpen ? 4 : 0 }}>
+              <div style={S.inlineHint}>Suggested next actions</div>
+              <button
+                onClick={() => setSuggestionsOpen((o) => !o)}
+                title={suggestionsOpen ? "Hide suggestions" : "Show suggestions"}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--textColorSecondary, #a6adc8)", fontSize: "13px", padding: "0 2px", lineHeight: 1 }}
+              >
+                {suggestionsOpen ? "▾" : "▸"}
+              </button>
+            </div>
+            {suggestionsOpen && (
+              <SuggestionCarousel
+                queries={chatStore.selectedNamespace === "__all__" ? CLUSTER_SUGGESTIONS : NAMESPACE_SUGGESTIONS}
+                onSelect={(a) => {
+                  if (a.toLowerCase().includes("runbook")) {
+                    const result = chatStore.exportRunbook();
+                    setExportNotice(result.message);
+                    window.setTimeout(() => setExportNotice(null), 2400);
+                  } else {
+                    setInput(a);
+                    taRef.current?.focus();
+                  }
+                }}
+              />
+            )}
           </div>
         )}
         <div style={S.inputArea}>

@@ -486,6 +486,24 @@ function sortNodesByAnomaly(nodes: any[]): any[] {
   });
 }
 
+/**
+ * Module-level cache of raw resource lists populated by gatherContext().
+ * Used by k8s-tools.ts execListResources() without requiring a ClusterContext parameter.
+ */
+export const rawResourceCache: {
+  secrets:      any[] | null;
+  configMaps:   any[] | null;
+  ingresses:    any[] | null;
+  pvcs:         any[] | null;
+  statefulSets: any[] | null;
+  daemonSets:   any[] | null;
+  jobs:         any[] | null;
+  cronJobs:     any[] | null;
+} = {
+  secrets: null, configMaps: null, ingresses: null, pvcs: null,
+  statefulSets: null, daemonSets: null, jobs: null, cronJobs: null,
+};
+
 export class K8sContextService {
   /**
    * Gather the current cluster context.
@@ -534,16 +552,33 @@ export class K8sContextService {
     };
 
     /* ── Fetch extra resource types in parallel (for relationship graph) ── */
-    const [rawDeployments, rawServices, rawIngresses, rawHpas, rawPvcs, rawSecrets, rawConfigMaps] =
+    const [
+      rawDeployments, rawServices, rawIngresses, rawHpas, rawPvcs,
+      rawSecrets, rawConfigMaps, rawStatefulSets, rawDaemonSets, rawJobs, rawCronJobs,
+    ] =
       await Promise.all([
         listViaApi(a.deploymentApi, filterNamespace),
         listViaApi(a.serviceApi, filterNamespace),
         listViaApi(a.ingressApi, filterNamespace),
         listViaApi(a.hpaApi, filterNamespace),
         listViaApi(a.pvcApi, filterNamespace),
-        listViaApi(a.secretApi, filterNamespace),
+        listViaApi(a.secretsApi, filterNamespace),   // secretsApi (plural) is the correct name
         listViaApi(a.configMapApi, filterNamespace),
+        listViaApi(a.statefulSetApi, filterNamespace),
+        listViaApi(a.daemonSetApi, filterNamespace),
+        listViaApi(a.jobApi, filterNamespace),
+        listViaApi(a.cronJobApi, filterNamespace),
       ]);
+
+    // Update module-level cache so k8s-tools execListResources can access all raw lists
+    rawResourceCache.secrets      = rawSecrets;
+    rawResourceCache.configMaps   = rawConfigMaps;
+    rawResourceCache.ingresses    = rawIngresses;
+    rawResourceCache.pvcs         = rawPvcs;
+    rawResourceCache.statefulSets = rawStatefulSets;
+    rawResourceCache.daemonSets   = rawDaemonSets;
+    rawResourceCache.jobs         = rawJobs;
+    rawResourceCache.cronJobs     = rawCronJobs;
 
     // Build lookup sets for Secret/ConfigMap existence checks (namespace/name keys).
     // KubeObjects expose namespace/name via getNs()/getName(); metadata fields may be

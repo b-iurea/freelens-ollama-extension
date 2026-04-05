@@ -10,7 +10,7 @@
  * code fences are rendered as `<pre>` so text never "jumps" between styles.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 /* ── public component ─────────────────────────────────────────────── */
 
@@ -317,7 +317,9 @@ function paintGraph(canvas: HTMLCanvasElement, layout: GraphLayout) {
 
 /** Renders a mermaid graph definition on an HTML Canvas — no external library. */
 function MermaidBlock({ source }: { source: string }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef      = useRef<HTMLCanvasElement>(null);
+  const modalCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [expanded, setExpanded] = useState(false);
 
   const layout = useMemo((): GraphLayout | null => {
     try {
@@ -327,10 +329,39 @@ function MermaidBlock({ source }: { source: string }) {
     } catch { return null; }
   }, [source]);
 
+  // Paint inline canvas
   useEffect(() => {
     if (!layout || !canvasRef.current) return;
     try { paintGraph(canvasRef.current, layout); } catch { /* silently skip bad diagrams */ }
   }, [layout]);
+
+  // Paint modal canvas when it becomes visible
+  useEffect(() => {
+    if (!expanded || !layout || !modalCanvasRef.current) return;
+    try { paintGraph(modalCanvasRef.current, layout); } catch {}
+  }, [expanded, layout]);
+
+  function handleSavePng() {
+    const c = canvasRef.current;
+    if (!c) return;
+    const url = c.toDataURL("image/png");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "k8s-graph.png";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  const toolbarBtnStyle: React.CSSProperties = {
+    padding: "2px 10px",
+    fontSize: "11px",
+    border: "1px solid var(--borderColor,#313244)",
+    borderRadius: 6,
+    background: "rgba(137,180,250,.1)",
+    color: "#89b4fa",
+    cursor: "pointer",
+  };
 
   if (!layout) {
     return (
@@ -342,15 +373,50 @@ function MermaidBlock({ source }: { source: string }) {
   }
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        display: "block",
-        margin: "8px auto",
-        borderRadius: 8,
-        border: "1px solid var(--borderColor,#313244)",
-      }}
-    />
+    <div style={{ margin: "8px 0" }}>
+      {/* toolbar */}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginBottom: 4 }}>
+        <button style={toolbarBtnStyle} onClick={handleSavePng} title="Save as PNG">&#8659; PNG</button>
+        <button style={toolbarBtnStyle} onClick={() => setExpanded(true)} title="Expand diagram">⛶ Expand</button>
+      </div>
+      {/* inline canvas — scrollable if graph is wider than the chat panel */}
+      <div style={{ overflow: "auto", borderRadius: 8, border: "1px solid var(--borderColor,#313244)" }}>
+        <canvas ref={canvasRef} style={{ display: "block" }} />
+      </div>
+      {/* expand modal */}
+      {expanded && (
+        <div
+          style={{
+            position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+            background: "rgba(17,17,27,.92)", zIndex: 9999,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+          onClick={() => setExpanded(false)}
+        >
+          <div
+            style={{
+              position: "relative",
+              maxWidth: "92vw", maxHeight: "92vh",
+              overflow: "auto", borderRadius: 12,
+              border: "1px solid var(--borderColor,#313244)",
+              background: "#11111b",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, padding: "10px 14px 6px" }}>
+              <button style={toolbarBtnStyle} onClick={handleSavePng} title="Save as PNG">&#8659; Save PNG</button>
+              <button
+                style={{ ...toolbarBtnStyle, color: "#f38ba8", borderColor: "rgba(243,139,168,.35)", background: "rgba(243,139,168,.08)" }}
+                onClick={() => setExpanded(false)}
+              >
+                ✕ Close
+              </button>
+            </div>
+            <canvas ref={modalCanvasRef} style={{ display: "block", margin: "0 16px 16px" }} />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

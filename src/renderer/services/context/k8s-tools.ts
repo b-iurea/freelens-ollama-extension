@@ -18,7 +18,7 @@ import type {
   OllamaTool,
 } from "../../../common/types";
 import { groupEventsByReason } from "./k8s-compressor";
-import { fetchPodLogs } from "../k8s-context-service";
+import { fetchPodLogs, rawResourceCache } from "../k8s-context-service";
 
 /* ─── Tool schema definitions ───────────────────────────────────────────── */
 
@@ -159,7 +159,8 @@ export const K8S_TOOLS: OllamaTool[] = [
       description:
         "List all Kubernetes resources of a specific kind across the cluster, " +
         "optionally filtered to a single namespace. " +
-        "Supported kinds: pods, deployments, services, nodes, namespaces. " +
+        "Supported kinds: pods, deployments, services, nodes, namespaces, " +
+        "secrets, configmaps, ingresses, statefulsets, daemonsets, jobs, cronjobs, pvcs. " +
         "For pods, the response includes each pod's container names so you can use them with get_pod_logs. " +
         "Use this for full inventory when the system context only shows a summary.",
       parameters: {
@@ -168,7 +169,7 @@ export const K8S_TOOLS: OllamaTool[] = [
         properties: {
           kind: {
             type: "string",
-            description: "Resource kind: pods | deployments | services | nodes | namespaces",
+            description: "Resource kind: pods | deployments | services | nodes | namespaces | secrets | configmaps | ingresses | statefulsets | daemonsets | jobs | cronjobs | pvcs",
           },
           namespace: {
             type: "string",
@@ -494,6 +495,10 @@ function execListResources(kind: string, namespace: string | undefined, ctx: Clu
   const ns = namespace?.trim() || undefined;
   const k = kind.trim().toLowerCase();
 
+  /* ── helpers ── */
+  const getName = (o: any): string => o.getName?.() ?? o.metadata?.name ?? o.name ?? "unknown";
+  const getNs   = (o: any): string => o.getNs?.()  ?? o.metadata?.namespace ?? o.namespace ?? "default";
+
   switch (k) {
     case "pods": {
       const items = ns ? ctx.pods.filter((p) => (p.namespace ?? "default") === ns) : ctx.pods;
@@ -537,8 +542,123 @@ function execListResources(kind: string, namespace: string | undefined, ctx: Clu
       for (const name of ctx.namespaces) out += `  ${name}\n`;
       return out;
     }
+    case "secrets": {
+      const raw = rawResourceCache.secrets;
+      if (!raw) return `SECRETS: (not fetched — context may be stale)\n`;
+      const items = ns ? raw.filter((s) => getNs(s) === ns) : raw;
+      if (!items.length) return `SECRETS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `SECRETS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const s of items) {
+        const prefix = ns ? "" : `${getNs(s)}/`;
+        const type = s.type ?? s.metadata?.type ?? "Opaque";
+        out += `  ${prefix}${getName(s)}  type=${type}\n`;
+      }
+      return out;
+    }
+    case "configmaps": {
+      const raw = rawResourceCache.configMaps;
+      if (!raw) return `CONFIGMAPS: (not fetched — context may be stale)\n`;
+      const items = ns ? raw.filter((c) => getNs(c) === ns) : raw;
+      if (!items.length) return `CONFIGMAPS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `CONFIGMAPS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const c of items) {
+        const prefix = ns ? "" : `${getNs(c)}/`;
+        const keys = Object.keys(c.data ?? c.metadata?.data ?? {}).join(", ");
+        out += `  ${prefix}${getName(c)}${keys ? `  keys=[${keys}]` : ""}\n`;
+      }
+      return out;
+    }
+    case "ingresses": {
+      const raw = rawResourceCache.ingresses;
+      if (!raw) return `INGRESSES: (not fetched — context may be stale)\n`;
+      const items = ns ? raw.filter((i) => getNs(i) === ns) : raw;
+      if (!items.length) return `INGRESSES${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `INGRESSES${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const i of items) {
+        const prefix = ns ? "" : `${getNs(i)}/`;
+        const hosts = (i.spec?.rules ?? []).map((r: any) => r.host ?? "*").join(", ");
+        out += `  ${prefix}${getName(i)}${hosts ? `  hosts=[${hosts}]` : ""}\n`;
+      }
+      return out;
+    }
+    case "statefulsets": {
+      const raw = rawResourceCache.statefulSets;
+      if (!raw) return `STATEFULSETS: (not fetched — context may be stale)\n`;
+      const items = ns ? raw.filter((s) => getNs(s) === ns) : raw;
+      if (!items.length) return `STATEFULSETS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `STATEFULSETS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const s of items) {
+        const prefix = ns ? "" : `${getNs(s)}/`;
+        const ready = s.status?.readyReplicas ?? 0;
+        const desired = s.spec?.replicas ?? 0;
+        const flag = desired > 0 && ready < desired ? " ⚠" : "";
+        out += `  ${prefix}${getName(s)}  replicas=${ready}/${desired}${flag}\n`;
+      }
+      return out;
+    }
+    case "daemonsets": {
+      const raw = rawResourceCache.daemonSets;
+      if (!raw) return `DAEMONSETS: (not fetched — context may be stale)\n`;
+      const items = ns ? raw.filter((d) => getNs(d) === ns) : raw;
+      if (!items.length) return `DAEMONSETS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `DAEMONSETS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const d of items) {
+        const prefix = ns ? "" : `${getNs(d)}/`;
+        const desired = d.status?.desiredNumberScheduled ?? 0;
+        const ready = d.status?.numberReady ?? 0;
+        const flag = desired > 0 && ready < desired ? " ⚠" : "";
+        out += `  ${prefix}${getName(d)}  desired=${desired}  ready=${ready}${flag}\n`;
+      }
+      return out;
+    }
+    case "jobs": {
+      const raw = rawResourceCache.jobs;
+      if (!raw) return `JOBS: (not fetched — context may be stale)\n`;
+      const items = ns ? raw.filter((j) => getNs(j) === ns) : raw;
+      if (!items.length) return `JOBS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `JOBS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const j of items) {
+        const prefix = ns ? "" : `${getNs(j)}/`;
+        const succeeded = j.status?.succeeded ?? 0;
+        const active = j.status?.active ?? 0;
+        const failed = j.status?.failed ?? 0;
+        const flag = failed > 0 ? " ⚠" : "";
+        out += `  ${prefix}${getName(j)}  succeeded=${succeeded}  active=${active}  failed=${failed}${flag}\n`;
+      }
+      return out;
+    }
+    case "cronjobs": {
+      const raw = rawResourceCache.cronJobs;
+      if (!raw) return `CRONJOBS: (not fetched — context may be stale)\n`;
+      const items = ns ? raw.filter((c) => getNs(c) === ns) : raw;
+      if (!items.length) return `CRONJOBS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `CRONJOBS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const c of items) {
+        const prefix = ns ? "" : `${getNs(c)}/`;
+        const schedule = c.spec?.schedule ?? "?";
+        const suspended = c.spec?.suspend ? "  suspended=true ⚠" : "";
+        const lastRun = c.status?.lastScheduleTime ? `  lastRun=${c.status.lastScheduleTime}` : "";
+        out += `  ${prefix}${getName(c)}  schedule=${schedule}${lastRun}${suspended}\n`;
+      }
+      return out;
+    }
+    case "pvcs": {
+      const raw = rawResourceCache.pvcs;
+      if (!raw) return `PVCS: (not fetched — context may be stale)\n`;
+      const items = ns ? raw.filter((p) => getNs(p) === ns) : raw;
+      if (!items.length) return `PVCS${ns ? ` in ${ns}` : ""}:\n  (none)\n`;
+      let out = `PVCS${ns ? ` in ${ns}` : ""} (${items.length}):\n`;
+      for (const p of items) {
+        const prefix = ns ? "" : `${getNs(p)}/`;
+        const phase = p.status?.phase ?? "Unknown";
+        const storage = p.spec?.resources?.requests?.storage ?? "?";
+        const flag = phase !== "Bound" ? " ⚠" : "";
+        out += `  ${prefix}${getName(p)}  [${phase}]  storage=${storage}${flag}\n`;
+      }
+      return out;
+    }
     default:
-      return `list_resources: unsupported kind "${kind}". Supported: pods, deployments, services, nodes, namespaces`;
+      return `list_resources: unsupported kind "${kind}". Supported: pods, deployments, services, nodes, namespaces, secrets, configmaps, ingresses, statefulsets, daemonsets, jobs, cronjobs, pvcs`;
   }
 }
 
