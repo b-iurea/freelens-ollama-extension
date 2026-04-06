@@ -25,7 +25,7 @@ All suggestions are welcome. </b>
 
 ### Smart Context Management
 
-Designed to work well on small (3–9B) models against large production clusters.
+Designed to work well on small (4–9B) models against mid sized clusters.
 
 - **Context Pipeline** — ChunkManager → BM25 Retriever → SummaryManager → ContextBuilder prevents "lost-in-the-middle" on long conversations
 - **K8s-Aware BM25 Retrieval** — Pure TypeScript BM25 that preserves compound terms (`kube-system`, `apps/v1`, pod names, IPs) as searchable tokens. Runs only on non-summarised messages to avoid duplicating the compressed history
@@ -94,6 +94,51 @@ The assistant adapts its response format to the intent of the query — no more 
 
 ---
 
+### Tool Calling & Human-in-the-Loop
+
+The assistant can inspect the cluster on-demand during a conversation, rather than relying solely on the upfront context snapshot.
+
+- **Tool Approval Cards** — Every tool call requires explicit user approval before execution; approval cards are colour-coded (🔧 blue = inspection, 🔐 yellow = sensitive log access)
+- **`get_namespace_detail`** — Full pod/deployment/service list for a specific namespace
+- **`get_pod_detail`** — Container states, restart counts, exit codes, and termination reasons for a single pod
+- **`get_resource_events`** — Recent warning events for any named K8s resource
+- **`get_deployment_detail`** — Replica status and pod states for a deployment
+- **`get_nodes`** — All cluster nodes with Ready/NotReady status
+- **`get_resource_chain`** — Full upstream/downstream graph: owner controller, PVCs, missing Secrets/ConfigMaps, HPA, service endpoints, Ingress chain
+- **`get_pod_logs`** — Last 30 log lines (signal-filtered); gated behind a dedicated 🔐 approval requiring the model to state its rationale first
+- **`list_resources`** — Full inventory of any resource kind: pods, deployments, services, nodes, namespaces, secrets, configmaps, ingresses, statefulsets, daemonsets, jobs, cronjobs, pvcs
+- **Tools Panel** — Grouped as Inspect / List / Sensitive; each tool individually toggleable in Preferences
+- **Auto Container Resolution** — For `get_pod_logs`, the correct container name is auto-resolved from context so the model doesn't have to guess
+
+---
+
+### Canvas Graph Renderer
+
+Mermaid relationship diagrams render as native Canvas — zero npm dependencies, no renderer crashes.
+
+- **Pure Canvas** — BFS layout engine, bezier edges, rounded-rect nodes; no external library
+- **K8s Colour Coding** — Pods green · Deployments/StatefulSets cyan · Services blue · Ingresses mauve · ConfigMaps yellow · Secrets peach · PVCs red · Nodes/HPA teal
+- **Inline Scroll** — Oversized graphs scroll horizontally inside the chat panel instead of overflowing
+- **⛶ Expand** — Opens a full-screen `92vw × 92vh` overlay with the graph rendered at full resolution
+- **↓ PNG** — Downloads the current graph as a lossless PNG via `canvas.toDataURL`
+
+---
+
+### Secret & ConfigMap Resolution
+
+- **Correct API names** — Secrets now fetched via `secretsApi` (previously `secretApi` — undefined — caused every secret reference to be falsely reported as `MISSING`)
+- **Namespace fallback** — When a namespace-scoped list call strips `metadata.namespace` from items (Freelens behaviour), the filter namespace is used as fallback, preventing false MISSING reports
+
+---
+
+### Suggestion Carousel
+
+- **Collapsible** — Collapsed by default; a `▸ / ▾` toggle opens or closes the suggestion chips to save vertical space
+- **25-item banks** — Separate suggestion pools for all-namespaces view (cluster-wide health) and single-namespace view (workload investigation)
+- **60-second rotation** — Chips rotate every minute; random start offset prevents always showing the same first page
+
+---
+
 ### UI & Developer Experience
 
 - **Fixed Toolbar** — All controls live in a dedicated toolbar row below the title bar; scrolls horizontally on narrow windows, never wraps or jumps
@@ -102,9 +147,9 @@ The assistant adapts its response format to the intent of the query — no more 
 - **Hover Effects** — All toolbar buttons have smooth blue highlight transitions; send button shows a glow ring on hover
 - **Fidelity Inline Score** — Fidelity button shows the score (e.g. `🔬 Fidelity 87%`) in blue when a report is available, not green (BUGs on small context, WIP)
 - **SRE Mode Selector** — Select mode: Auto / Troubleshoot / Security / Cost / Capacity / YAML
-- **Suggested Actions** — Context-aware follow-up chips shown after each response to accelerate investigation loops
+- **Suggested Actions** — Context-aware follow-up chips (collapsible) shown in the input bar to accelerate investigation loops
 - **Sources Panel** — Shows what data the model used: snapshot age, filtered resource counts, warning event count
-- **Performance Stats** — After each response: tokens/sec, prompt tokens, generation time, model load time
+- **Performance Stats** — After each response: tokens/sec, prompt tokens, generation time, model load time. Cloud models show `0 t/s` — this is normal (no timing data returned by cloud endpoints)
 - **In-Chat Model Parameters** — Tune temperature, top_p, top_k, repeat penalty, and max tokens
 - **In-Chat Connection Panel** — Configure Ollama endpoint and test via Node.js HTTP (no mixed-content issues)
 - **Session Persistence** — Chat history persisted per `cluster + namespace`, restored on Freelens restart
@@ -143,13 +188,17 @@ ollama serve
 ### 2. Pull a Model
 
 ```bash
-# All work well with the v0.2.0 context pipeline on large clusters
-ollama pull llama3.2        # 3B   — fast, good general purpose
-ollama pull phi4-mini        # 3.8B — very fast on CPU, good for quick queries
-ollama pull qwen2.5:7b      # 7B   — strong at YAML and structured data
+# Minimum recommended: 7B for tool-calling and structured reasoning
+ollama pull qwen2.5:7b      # 7B   — strong at YAML, structured data, and tool use
 ollama pull mistral          # 7B   — solid all-rounder
 ollama pull gemma3:9b        # 9B   — strong reasoning, handles large clusters well
+ollama pull llama3.1:8b     # 8B   — good tool-calling support
+
+# Cloud (via compatible endpoint)
+# qwen3.5:cloud, gpt-4o, etc. — use Preferences to configure a custom endpoint
 ```
+
+> ⚠️ **Models smaller than 4B parameters are not reliably supported.** Tool-calling, structured JSON, and multi-step reasoning require sufficient model capacity. Models like `llama3.2:3b` or `phi4-mini:3.8b` may work for simple queries but fail on tool calls and investigation workflows.
 
 ### 3. Install the Extension
 
@@ -223,6 +272,8 @@ After each response a button shows generation speed. Click to expand:
 | Generation time | Time spent generating |
 | Model load | Time to load the model |
 
+> **Note:** Cloud-routed models (e.g. `qwen3.5:cloud`) return `0 t/s` — this is expected. Cloud endpoints do not expose per-token timing metadata. All other stats remain accurate.
+
 ### Model Parameters
 
 | Parameter | Range | Description |
@@ -253,25 +304,27 @@ src/
 ├── renderer/
 │   ├── index.tsx                   # Renderer entry (registers pages, menus, preferences)
 │   ├── components/
-│   │   ├── sre-chat.tsx            # Chat UI + all panels (Connection, Params, Stats, Sources)
-│   │   └── markdown-renderer.tsx   # Streaming-safe block-level Markdown renderer
+│   │   ├── sre-chat.tsx            # Chat UI + all panels (Connection, Params, Stats, Sources, Tools)
+│   │   └── markdown-renderer.tsx   # Streaming-safe Markdown + pure-Canvas Mermaid renderer
 │   ├── icons/sre-icon.tsx
 │   ├── pages/sre-assistant-page.tsx
 │   ├── preferences/sre-preferences.tsx
 │   ├── services/
 │   │   ├── ollama-service.ts       # Ollama API: Node.js HTTP, streaming, stats, system prompt
-│   │   ├── k8s-context-service.ts  # K8s context via KubeApi.list() + namespace filtering
+│   │   ├── k8s-context-service.ts  # K8s context via KubeApi.list() + raw resource cache
 │   │   └── context/
 │   │       ├── index.ts            # Barrel export
 │   │       ├── chunk-manager.ts    # Sliding-window chunker (~300 words, 50 overlap)
 │   │       ├── bm25-retriever.ts   # Pure-TS BM25 (k1=1.5, b=0.75), K8s-aware tokenizer
 │   │       ├── summary-manager.ts  # Background Ollama-based conversation compression
 │   │       ├── context-builder.ts  # Assembles: system -> summary -> BM25 chunks -> recent -> query
-│   │       └── cluster-memory.ts   # Persistent snapshot, namespace rollup, BM25 query filter
+│   │       ├── cluster-memory.ts   # Persistent snapshot, namespace rollup, BM25 query filter
+│   │       ├── k8s-tools.ts        # Tool definitions + executors (all tool kinds)
+│   │       └── k8s-compressor.ts   # Token-efficient K8s resource serialisers
 │   └── stores/
-│       └── chat-store.ts           # MobX state, pipeline orchestration, intent detection
+│       └── chat-store.ts           # MobX state, pipeline orchestration, HiL tool approval
 └── common/
-    └── types.ts                    # Shared TypeScript types
+    └── types.ts                    # Shared TypeScript types (ClusterContext, OllamaTool, ToolsConfig)
 ```
 
 ### Context Pipeline (per message)
@@ -325,12 +378,24 @@ src/
 
 ---
 
+## Known Issues
+
+| # | Issue | Impact | Status |
+|---|-------|--------|--------|
+| 1 | **Models < 4B not reliable** | Small models (e.g. `llama3.2:3b`, `phi4-mini:3.8b`) fail on tool calls, structured JSON output, and multi-step investigation. Minimum effective size is ~7B. | Won't fix — model capability constraint |
+| 2 | **Fidelity score not working as intended** | The hallucination detector produces noisy results on small or fast models and may flag correct K8s names. Score should be treated as indicative only. | WIP |
+| 3 | **Canvas graph: node labels truncated** — resource names are truncated to fit the fixed node width, making it hard to distinguish replicas of the same resource (e.g. three pods named `api-server-7fd464bcc...` all look identical). Kind prefix (`Deployment:`, `Pod:`) uses characters that could be used for the actual name. | Low readability for large graphs | Planned fix: shorter kind prefix abbreviations (`Dp:`, `Pod:`, `Svc:`, `Ing:`) |
+| 4 | **Canvas vs Mermaid graph quality** | The canvas renderer produces a simpler layout than the Mermaid reference. Complex graphs with many cross-level edges are harder to read in canvas form. Node positioning, subgraph support, and edge routing are more limited. | Cosmetic | Gradual improvement planned |
+| 5 | **Cloud models show `0 t/s`** | Cloud-routed Ollama models do not return per-token timing data. The stats panel shows `0 t/s` which looks like an error but is normal. A UI label now clarifies this. | Cosmetic — labelled in UI |
+
+---
+
 ## Roadmap
 
 ### Completed
 
 - [x] Preset SRE modes (Auto / Troubleshoot / Security / Cost / Capacity / YAML)
-- [x] Suggested follow-up actions
+- [x] Suggested follow-up actions (collapsible carousel)
 - [x] Object-aware entry points (URL param prefill)
 - [x] Sources / data visibility panel
 - [x] Session persistence per cluster + namespace
@@ -341,9 +406,18 @@ src/
 - [x] Cluster memory with warm-start and namespace health rollup
 - [x] BM25 query-relevant filtering (~85-90% token reduction on large clusters)
 - [x] Intent detection with format-per-intent responses
+- [x] Tool calling with human-in-the-loop approval for all tools
+- [x] `list_resources` for all major K8s resource types
+- [x] Pod log access (`get_pod_logs`) gated behind explicit approval
+- [x] Canvas graph renderer (no external dependencies, expand + PNG export)
+- [x] Auto container name resolution for `get_pod_logs`
+- [x] Secret/ConfigMap MISSING false-positive fix (`secretsApi` API name)
 
 ### Planned
 
+- [ ] **Canvas graph node abbreviations** — shorter kind prefixes (`Dp:`, `Svc:`, `Ing:`) to expose more of the resource name in fixed-width nodes
+- [ ] **Canvas graph layout improvements** — better edge routing, subgraph support, reduced cross-level edge crossings
+- [ ] **Fidelity score rework** — more reliable hallucination detection across model sizes
 - [ ] **Event and log correlation** — log correlation alongside warning event correlation
 - [ ] **Cluster diff awareness** — compare snapshots across refreshes to explain what changed
 - [ ] **Safe action queue** — queue kubectl commands/manifests for review before execution
@@ -379,6 +453,30 @@ pnpm pack          # Pack .tgz for local Freelens installation
 - **Hover transitions** — toolbar buttons and send button have smooth 150ms highlight/glow effects
 - **Fidelity hallucination detector fix** — sub-segments of compound K8s names (e.g. `repo-server` from `argo-cd-argocd-repo-server`) are no longer falsely flagged as hallucinations
 - **Fidelity discrepancies fix** — markdown headings, bullet lines, and table rows from the judge response are filtered out and no longer appear as discrepancy items
+- **Tool calling with HiL** — All tools now require explicit user approval before execution; approval cards are colour-coded (🔧 blue for inspection tools, 🔐 yellow for log access)
+- **`list_resources` expanded** — Now covers all major resource types: pods, deployments, services, nodes, namespaces, secrets, configmaps, ingresses, statefulsets, daemonsets, jobs, cronjobs, pvcs
+- **Secret resolution fix** — Secrets were always falsely reported `MISSING ⚠` due to a wrong API property name (`secretApi` → `secretsApi`); fixed using the verified Freelens K8sApi type declaration
+- **Namespace fallback for secret/configmap lookup** — When namespace-scoped API calls strip `metadata.namespace` from items, the filter namespace is used as fallback — no more false MISSING for existing resources
+- **Canvas graph renderer** — Replaced crashing Mermaid dynamic import with a pure-Canvas renderer: BFS layout, bezier edges, K8s colour-coded nodes. Zero external dependencies, no renderer crash
+- **Graph Expand button** — Opens graph in a full-screen overlay (`92vw × 92vh`, scrollable)
+- **Graph Save PNG** — Downloads the current diagram as a lossless PNG
+- **Inline canvas scroll** — Oversized graphs scroll horizontally inside the chat panel
+- **Collapsible suggestion carousel** — Suggestion chips are collapsed by default; `▸ / ▾` toggle expands/collapses on demand
+- **25-item suggestion banks** — Separate pools for all-namespaces (cluster-wide) and single-namespace queries; 60-second rotation with random offset
+- **Auto container name resolution** — For `get_pod_logs`, the correct container name is resolved from context automatically so the model doesn't need to guess
+- **Containers captured for all pods** — Container names are now extracted for healthy pods too, not only anomalous ones, ensuring `get_pod_logs` always knows valid container targets
+- **StatefulSets, DaemonSets, Jobs, CronJobs fetched** — Added to the parallel context fetch alongside deployments, services, ingresses, PVCs
+- **`0 t/s` for cloud models labelled** — Stats panel note clarifies this is expected for cloud-routed endpoints
+
+**Token impact of tool calling on a 180-pod cluster:**
+
+| | Without tools | With tools (per call) |
+|--|--|--|
+| System prompt cluster section | ~1,000 tokens | ~1,000 tokens |
+| Tool result (e.g. `list_resources pods`) | — | ~200–600 tokens |
+| Tool result (e.g. `get_resource_chain`) | — | ~150–400 tokens |
+| Tool result (e.g. `get_pod_logs`) | — | ~50–200 tokens |
+| Reduction vs full cluster dump (v0.1.0) | ~85% | ~80–85% |
 
 ### v0.2.0
 

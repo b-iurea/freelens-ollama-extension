@@ -6,7 +6,7 @@
  */
 
 import { action, computed, makeObservable, observable, runInAction } from "mobx";
-import type { ChatMessage, ClusterContext, FidelityReport, OllamaModelInfo, OllamaModelParams, OllamaPerformanceStats, ToolsConfig } from "../../common/types";
+import type { ChatMessage, ClusterContext, FidelityReport, OllamaModelInfo, OllamaModelParams, OllamaPerformanceStats, ToolApprovalState, ToolsConfig } from "../../common/types";
 import { DEFAULT_MODEL_PARAMS, DEFAULT_TOOLS_CONFIG } from "../../common/types";
 import { K8sContextService } from "../services/k8s-context-service";
 import { OllamaService } from "../services/ollama-service";
@@ -20,6 +20,7 @@ import {
   compressForPrompt,
   K8S_TOOLS,
   executeK8sTool,
+  executePodLogsApproved,
 } from "../services/context";
 
 /**
@@ -178,6 +179,7 @@ export class ChatStore {
   fidelityReport: FidelityReport | null = null;
   isFidelityRunning = false;
   toolsConfig: ToolsConfig = { ...DEFAULT_TOOLS_CONFIG, tools: { ...DEFAULT_TOOLS_CONFIG.tools } };
+  pendingToolApproval: ToolApprovalState | null = null;
 
   private ollamaService: OllamaService;
   private chunkManager: ChunkManager;
@@ -213,6 +215,7 @@ export class ChatStore {
       fidelityReport: observable,
       isFidelityRunning: observable,
       toolsConfig: observable,
+      pendingToolApproval: observable,
       hasMessages: computed,
       lastMessage: computed,
       setEndpoint: action,
@@ -229,6 +232,8 @@ export class ChatStore {
       sendMessage: action,
       runFidelityEvaluation: action,
       setToolsConfig: action,
+      approvePendingTool: action,
+      denyPendingTool: action,
     });
 
     this.loadSettings();
@@ -445,6 +450,22 @@ export class ChatStore {
     this.saveSettings();
   }
 
+  approvePendingTool() {
+    if (this.pendingToolApproval) {
+      const { resolve } = this.pendingToolApproval;
+      this.pendingToolApproval = null;
+      resolve(true);
+    }
+  }
+
+  denyPendingTool() {
+    if (this.pendingToolApproval) {
+      const { resolve } = this.pendingToolApproval;
+      this.pendingToolApproval = null;
+      resolve(false);
+    }
+  }
+
   async setSelectedNamespace(ns: string) {
     this.persistSessionMessages();
     this.selectedNamespace = ns;
@@ -620,7 +641,12 @@ export class ChatStore {
       const viewMode = this.selectedNamespace === "__all__" ? "all-namespaces" : "single-namespace";
       const rawCtx = this.clusterContext ?? undefined;
       const promptContext = rawCtx ? compressForPrompt(rawCtx, viewMode) : undefined;
-      const baseSystemPrompt = this.ollamaService.buildSystemPrompt(promptContext);
+      // Compute enabled tools before building the system prompt so we can
+      // suppress tool-related instructions when tools are off.
+      const enabledTools = rawCtx && this.toolsConfig.enabled
+        ? K8S_TOOLS.filter((t) => this.toolsConfig.tools[t.function.name as keyof ToolsConfig["tools"]])
+        : [];
+      const baseSystemPrompt = this.ollamaService.buildSystemPrompt(promptContext, enabledTools.length > 0);
       const modeInstruction = SRE_MODE_INSTRUCTIONS[this.selectedSreMode];
       const { instruction: workflowInstruction } = this.buildSreWorkflowInstruction(userMessage.content);
       const systemPrompt = [
@@ -656,16 +682,58 @@ export class ChatStore {
 
       // 5. Stream via Ollama — use agentic tool-calling when cluster context is available
       //    and at least one tool is enabled by the user.
-      const enabledTools = this.toolsConfig.enabled
-        ? K8S_TOOLS.filter((t) => this.toolsConfig.tools[t.function.name as keyof ToolsConfig["tools"]])
-        : [];
+
+      // HiL wrapper: every tool call requires user approval before execution.
+      // For get_pod_logs, also resolves the correct container name from context.
+      const toolExecutor = async (name: string, args: Record<string, any>, ctx: import("../../common/types").ClusterContext): Promise<string> => {
+        // Auto-resolve container name for get_pod_logs so the model never guesses wrong
+        if (name === "get_pod_logs") {
+          const podName = String(args.name ?? "");
+          const podNs   = String(args.namespace ?? "default");
+          const pod = ctx.pods.find(
+            (p) => p.name === podName && (p.namespace ?? "default") === podNs,
+          );
+          if (pod?.containers && pod.containers.length > 0) {
+            const knownNames = pod.containers.map((c) => c.name);
+            const provided = String(args.container ?? "");
+            if (provided === "" || !knownNames.includes(provided)) {
+              const main = pod.containers.find((c) => c.isMain) ?? pod.containers[0];
+              args = { ...args, container: main.name };
+            }
+          }
+        }
+
+        // Show approval card for every tool call
+        const lastAssistantContent =
+          [...this.messages].reverse().find((m) => m.role === "assistant")?.content ?? "";
+        const approved = await new Promise<boolean>((resolve) => {
+          runInAction(() => {
+            this.pendingToolApproval = {
+              toolName: name,
+              args: args as Record<string, string>,
+              modelRationale: lastAssistantContent,
+              resolve,
+            };
+          });
+        });
+        runInAction(() => { this.pendingToolApproval = null; });
+
+        if (!approved) {
+          return `User declined to run '${name}'. Continue analysis using available context.`;
+        }
+        if (name === "get_pod_logs") {
+          return executePodLogsApproved(args as Record<string, string>, ctx);
+        }
+        return executeK8sTool(name, args, ctx);
+      };
+
       const stream = rawCtx && enabledTools.length > 0
         ? this.ollamaService.streamChatWithTools(
             assembled.messages,
             rawCtx,
             enabledTools,
             { ...this.modelParams },
-            executeK8sTool,
+            toolExecutor,
           )
         : this.ollamaService.streamChatAssembled(assembled.messages, { ...this.modelParams });
 
@@ -685,8 +753,15 @@ export class ChatStore {
       runInAction(() => {
         const finalIndex = this.messages.findIndex((m) => m.id === assistantMessage.id);
         if (finalIndex >= 0) {
+          // Sanitise small-LLM hallucinations:
+          // - Fake tool-call text like *[Tool: get_nodes()]*
+          // - Fabricated shell prompts like "$ kubectl ..."
+          let content = this.messages[finalIndex].content;
+          content = content.replace(/\*?\[Tool:\s*[^\]]*\]\*?\n?/g, "");
+          content = content.replace(/^```(?:bash|sh|shell)\n(?:\$\s*kubectl\s+.*\n?)+```\n?/gm, "");
           this.messages[finalIndex] = {
             ...this.messages[finalIndex],
+            content,
             isStreaming: false,
           };
         }

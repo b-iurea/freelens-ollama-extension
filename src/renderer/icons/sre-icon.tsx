@@ -3,8 +3,6 @@
  * Licensed under MIT License.
  */
 
-import React from "react";
-
 export function SreIcon() {
   return (
     <svg
