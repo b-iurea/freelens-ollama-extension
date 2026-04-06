@@ -3,7 +3,7 @@
 An AI-powered **Kubernetes SRE (Site Reliability Engineer)** assistant embedded directly in Freelens. Chat with a local Ollama model that sees your live cluster state and adapts its response format to what you're actually asking.
 
 ![Freelens Extension](https://img.shields.io/badge/Freelens-Extension-blue)
-![Version](https://img.shields.io/badge/version-0.3.0-orange)
+![Version](https://img.shields.io/badge/version-0.3.1-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 <b>This is a vibecoded plugin so feel free to steal, edit, update or improve.
