@@ -28,9 +28,9 @@ export const K8S_TOOLS: OllamaTool[] = [
     function: {
       name: "get_namespace_detail",
       description:
-        "Get the full list of pods, deployments, and services for a specific namespace. " +
-        "Use this when you need to see ALL resources in a namespace, not just anomalies. " +
-        "Especially useful when viewing all-namespaces scope and need to drill into one.",
+        "ONLY call this when the LIVE CLUSTER CONTEXT does not already list the individual pods and deployments for the target namespace. " +
+        "If the context already shows the per-resource details for that namespace, answer from context instead. " +
+        "Use this only when viewing all-namespaces scope and the namespace appears only as a summary line (pod count, dep count) with no individual resource names.",
       parameters: {
         type: "object",
         required: ["namespace"],
@@ -48,8 +48,9 @@ export const K8S_TOOLS: OllamaTool[] = [
     function: {
       name: "get_pod_detail",
       description:
-        "Get detailed status of a specific pod: container states, restart counts, exit codes, " +
-        "termination reasons, and recent warning events related to that pod.",
+        "ONLY call this when the pod's container states, restart counts, exit codes, and termination reasons are NOT already shown in the LIVE CLUSTER CONTEXT. " +
+        "If the context already includes that pod's container-level detail (↳ lines), answer from context instead. " +
+        "Use this only for healthy pods whose detail was deliberately omitted from the context.",
       parameters: {
         type: "object",
         required: ["name", "namespace"],
@@ -85,8 +86,9 @@ export const K8S_TOOLS: OllamaTool[] = [
     function: {
       name: "get_deployment_detail",
       description:
-        "Get replica status and pod states for a specific deployment. " +
-        "Returns the deployment's desired vs ready replicas and the state of its pods.",
+        "ONLY call this when the deployment's replica counts and pod states are NOT already shown in the LIVE CLUSTER CONTEXT. " +
+        "If the context already lists that deployment with its replica status, answer from context instead. " +
+        "Do NOT fan-out: never call this for every deployment in a list you already have. Call at most once for the most critical deployment, then ask the user whether to continue.",
       parameters: {
         type: "object",
         required: ["name", "namespace"],
@@ -102,8 +104,9 @@ export const K8S_TOOLS: OllamaTool[] = [
     function: {
       name: "get_nodes",
       description:
-        "Get all cluster nodes with their Ready/NotReady status. " +
-        "Use when investigating scheduling failures or node-level issues.",
+        "ONLY call this when nodes are NOT already listed in the LIVE CLUSTER CONTEXT. " +
+        "If the context already contains a NODES section, answer from that data instead. " +
+        "Use this only when investigating scheduling failures and the context has no node information.",
       parameters: {
         type: "object",
         required: [],
@@ -157,12 +160,13 @@ export const K8S_TOOLS: OllamaTool[] = [
     function: {
       name: "list_resources",
       description:
-        "List all Kubernetes resources of a specific kind across the cluster, " +
-        "optionally filtered to a single namespace. " +
+        "ONLY call this tool if the requested resource kind is NOT already listed in the LIVE CLUSTER CONTEXT. " +
+        "If the context already contains a pod list, deployment list, service list, node list, or namespace list, " +
+        "you MUST answer directly from that data — do NOT call this tool. " +
+        "Use this only when the context explicitly shows a summary count (e.g. 'Pods: 12 total') but omits the individual resource names. " +
         "Supported kinds: pods, deployments, services, nodes, namespaces, " +
         "secrets, configmaps, ingresses, statefulsets, daemonsets, jobs, cronjobs, pvcs. " +
-        "For pods, the response includes each pod's container names so you can use them with get_pod_logs. " +
-        "Use this for full inventory when the system context only shows a summary.",
+        "For pods, the response includes each pod's container names so you can use them with get_pod_logs.",
       parameters: {
         type: "object",
         required: ["kind"],
