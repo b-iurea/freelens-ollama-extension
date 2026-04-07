@@ -3,13 +3,14 @@
  * Licensed under MIT License.
  */
 
-export function SreIcon() {
+export function SreIcon({ size = 16 }: { size?: string | number } = {}) {
+  const px = typeof size === "string" ? parseFloat(size) || 16 : size;
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
       viewBox="0 0 24 24"
-      width="16"
-      height="16"
+      width={px}
+      height={px}
       fill="currentColor"
     >
       {/* Robot head */}

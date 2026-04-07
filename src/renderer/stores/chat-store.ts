@@ -180,6 +180,10 @@ export class ChatStore {
   isFidelityRunning = false;
   toolsConfig: ToolsConfig = { ...DEFAULT_TOOLS_CONFIG, tools: { ...DEFAULT_TOOLS_CONFIG.tools } };
   pendingToolApproval: ToolApprovalState | null = null;
+  /** Set by workload context-menu / detail-panel buttons to auto-send a pre-built analysis prompt. */
+  pendingAnalysis: string | null = null;
+  /** Controls visibility of the floating SRE chat popup panel. */
+  popupOpen = false;
 
   private ollamaService: OllamaService;
   private chunkManager: ChunkManager;
@@ -216,6 +220,7 @@ export class ChatStore {
       isFidelityRunning: observable,
       toolsConfig: observable,
       pendingToolApproval: observable,
+      pendingAnalysis: observable,
       hasMessages: computed,
       lastMessage: computed,
       setEndpoint: action,
@@ -234,6 +239,11 @@ export class ChatStore {
       setToolsConfig: action,
       approvePendingTool: action,
       denyPendingTool: action,
+      triggerWorkloadAnalysis: action,
+      consumePendingAnalysis: action,
+      popupOpen: observable,
+      openPopup: action,
+      closePopup: action,
     });
 
     this.loadSettings();
@@ -464,6 +474,53 @@ export class ChatStore {
       this.pendingToolApproval = null;
       resolve(false);
     }
+  }
+
+  /**
+   * Called by workload context-menu / detail-panel buttons.
+   * Builds the analysis prompt and stores it so SreChat can pick it up,
+   * then navigates to the SRE Assistant page automatically.
+   */
+  triggerWorkloadAnalysis(
+    kind: string,
+    name: string,
+    namespace: string,
+    analysisType: "relationship" | "resources",
+  ) {
+    let prompt: string;
+    if (analysisType === "relationship") {
+      prompt =
+        `Draw the full relationship and dependency map for ${kind}/${name} in namespace ${namespace}. ` +
+        `Include: owner controller, volumes (PVCs), referenced Secrets and ConfigMaps, Services and Ingresses, ` +
+        `HPA, and any missing or misconfigured dependencies. Use a mermaid diagram if helpful. ` +
+        `Base the analysis exclusively on the LIVE CLUSTER CONTEXT — do not call tools if data is already available.`;
+    } else {
+      prompt =
+        `Perform a resource analysis for ${kind}/${name} in namespace ${namespace}. ` +
+        `Analyse: CPU and memory requests vs limits vs actual usage, OOMKill history (exit code 137), ` +
+        `restart patterns, any throttling signals, and right-sizing recommendations based on real observed data. ` +
+        `Show a Markdown table with current settings and recommended values with clear mathematical justification. ` +
+        `Base the analysis exclusively on the LIVE CLUSTER CONTEXT — do not call tools if data is already available.`;
+    }
+    this.pendingAnalysis = prompt;
+    this.openPopup();
+  }
+
+  /** Atomically reads and clears pendingAnalysis. */
+  consumePendingAnalysis(): string | null {
+    const val = this.pendingAnalysis;
+    this.pendingAnalysis = null;
+    return val;
+  }
+
+  /** Opens the floating SRE chat popup panel. */
+  openPopup(): void {
+    this.popupOpen = true;
+  }
+
+  /** Closes the floating SRE chat popup panel. */
+  closePopup(): void {
+    this.popupOpen = false;
   }
 
   async setSelectedNamespace(ns: string) {
