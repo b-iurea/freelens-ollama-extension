@@ -29,10 +29,10 @@
     </div>
     <div class="nav-links">
       <a href="#features">Features</a>
-      <a href="#screenshots">Screenshots</a>
+      <a href="#how-it-works">How It Works</a>
       <a href="#quickstart">Quick Start</a>
-      <a href="https://github.com/biurea/freelens-ollama-extension" target="_blank" rel="noopener" class="nav-gh">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+      <a href="https://github.com/biurea/freelens-k8s-sre-assistant" target="_blank" rel="noopener" class="nav-gh">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
         GitHub
       </a>
     </div>
@@ -42,41 +42,69 @@
 <!-- ── HERO ── -->
 <header class="hero">
   <div class="hero-inner">
-    <div class="hero-badge">Freelens Extension · v0.3.2 · MIT</div>
+    <div class="hero-badge">Freelens Extension &nbsp;·&nbsp; v0.3.2 &nbsp;·&nbsp; MIT License</div>
     <h1>
-      Chat with your Kubernetes cluster.<br />
-      <span class="gradient-text">Right inside Freelens.</span>
+      Talk to your Kubernetes cluster.<br />
+      <span class="gradient-text">Without leaving Freelens.</span>
     </h1>
     <p class="hero-sub">
-      An AI-powered SRE assistant that sees your live cluster state — pods, deployments,
-      nodes, events — and helps you troubleshoot, write YAML, and understand incidents
-      without leaving your dashboard. Powered by local&nbsp;<strong>Ollama</strong>. No data leaves your network.
+      An AI-powered SRE assistant embedded directly in Freelens. It sees your live cluster state —
+      pods, deployments, nodes, events — and adapts its answers to what you're actually asking.
+      Powered by local <strong>Ollama</strong>. No data leaves your network.
     </p>
     <div class="hero-ctas">
       <a href="#quickstart" class="btn btn-primary">Get Started</a>
-      <a href="https://github.com/biurea/freelens-ollama-extension" target="_blank" rel="noopener" class="btn btn-secondary">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+      <a href="https://github.com/biurea/freelens-k8s-sre-assistant" target="_blank" rel="noopener" class="btn btn-secondary">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
         View on GitHub
       </a>
     </div>
     <div class="hero-pills">
-      <span class="pill pill-green">🔒 100% Local — Ollama</span>
-      <span class="pill pill-blue">☸️ Kubernetes-native</span>
-      <span class="pill pill-purple">🧠 Tool Calling</span>
-      <span class="pill pill-yellow">⚡ Streaming</span>
+      <span class="pill pill-green">100% Local — Ollama</span>
+      <span class="pill pill-blue">Kubernetes-native</span>
+      <span class="pill pill-purple">Tool Calling</span>
+      <span class="pill pill-yellow">Streaming</span>
+      <span class="pill pill-red">Human-in-the-Loop</span>
     </div>
   </div>
 </header>
 
-<!-- ── SCREENSHOT HERO ── -->
+<!-- ── HERO SCREENSHOT ── -->
 <section class="screenshot-hero">
   <div class="screenshot-hero-inner">
     <img
       src="screenshots/v0.3.0/chat_ui.png"
       alt="K8s SRE Assistant chat UI inside Freelens"
       class="hero-screenshot"
-      loading="lazy"
+      loading="eager"
     />
+  </div>
+</section>
+
+<!-- ── STATS ── -->
+<section class="stats-bar">
+  <div class="container">
+    <div class="stats-grid">
+      <div class="stat-item">
+        <span class="stat-num">~85%</span>
+        <span class="stat-label">token reduction vs v0.1.0 on large clusters</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat-item">
+        <span class="stat-num">9</span>
+        <span class="stat-label">built-in Kubernetes inspection tools</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat-item">
+        <span class="stat-num">6</span>
+        <span class="stat-label">SRE workflow modes with intent auto-detection</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat-item">
+        <span class="stat-num">4–9B</span>
+        <span class="stat-label">parameter models fully supported</span>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -84,164 +112,315 @@
 <section class="section" id="features">
   <div class="container">
     <div class="section-label">Features</div>
-    <h2 class="section-title">Everything an SRE needs, in one panel</h2>
-    <p class="section-sub">Designed to run well on small (4–9 B) models against real-world mid-size clusters.</p>
+    <h2 class="section-title">Everything an SRE needs, built in</h2>
+    <p class="section-sub">Designed to work well on small (4–9B) models against real-world mid-size clusters.</p>
 
     <div class="feature-grid">
 
       <div class="feature-card">
         <div class="feature-icon" style="background:rgba(137,180,250,.12);color:#89b4fa">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
         </div>
-        <h3>AI Chat Interface</h3>
-        <p>Conversational assistant embedded directly in the Freelens cluster view. Ask in plain English — get structured SRE answers.</p>
+        <div class="feature-text">
+          <h3>Conversational Chat Interface</h3>
+          <p>Ask SRE questions in plain English. Responses stream in with full Markdown rendering — tables, code blocks, and lists render correctly even mid-stream. Session history persisted per cluster and namespace.</p>
+        </div>
       </div>
 
       <div class="feature-card">
         <div class="feature-icon" style="background:rgba(166,227,161,.12);color:#a6e3a1">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
         </div>
-        <h3>Live Cluster Awareness</h3>
-        <p>The model sees pods, deployments, services, nodes, and events via direct <code>KubeApi.list()</code> calls — not cached stale data.</p>
+        <div class="feature-text">
+          <h3>Live Cluster Awareness</h3>
+          <p>The model sees your cluster in real time via direct <code>KubeApi.list()</code> calls — not a stale cache. Pods, deployments, services, nodes, warning events, replica mismatches. Click Refresh to force a new scan.</p>
+        </div>
       </div>
 
       <div class="feature-card">
         <div class="feature-icon" style="background:rgba(203,166,247,.12);color:#cba6f7">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
-        <h3>Floating Chat Popup</h3>
-        <p>Click the robot icon on any workload — a 640 px side panel slides in with analysis already running. No page navigation needed.</p>
-      </div>
-
-      <div class="feature-card">
-        <div class="feature-icon" style="background:rgba(249,226,175,.12);color:#f9e2af">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+        <div class="feature-text">
+          <h3>100% Local by Default</h3>
+          <p>All Ollama API calls use Node.js <code>http</code>/<code>https</code> — no browser mixed-content issues. Plain HTTP remote Ollama instances work reliably. Cloud-compatible endpoints configurable via Preferences.</p>
         </div>
-        <h3>Smart Context Management</h3>
-        <p>BM25 retrieval, non-blocking summarisation, and anomaly-first sorting keep the model focused on what matters — even on large clusters.</p>
       </div>
 
       <div class="feature-card">
         <div class="feature-icon" style="background:rgba(243,139,168,.12);color:#f38ba8">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         </div>
-        <h3>Tool Calling + Human-in-the-Loop</h3>
-        <p>The assistant drills into specific resources on demand. Every tool call shows an Approve / Deny card — you stay in control.</p>
-      </div>
-
-      <div class="feature-card">
-        <div class="feature-icon" style="background:rgba(137,180,250,.12);color:#89b4fa">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        <div class="feature-text">
+          <h3>Tool Calling with Human-in-the-Loop</h3>
+          <p>The assistant drills into specific resources on demand during a conversation. Every tool call shows an Approve / Deny card — colour-coded by sensitivity. You stay in control of what the model is allowed to inspect.</p>
         </div>
-        <h3>Intent-Aware Responses</h3>
-        <p>Queries auto-classified as <em>write</em>, <em>investigate</em>, <em>explain</em>, or <em>general</em> — response format adapts automatically. No more investigation preambles for a simple YAML request.</p>
-      </div>
-
-      <div class="feature-card">
-        <div class="feature-icon" style="background:rgba(166,227,161,.12);color:#a6e3a1">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-        </div>
-        <h3>Canvas Graph Renderer</h3>
-        <p>Relationship diagrams render as native Canvas — zero npm dependencies, K8s colour coding, full-screen expand, and PNG export.</p>
-      </div>
-
-      <div class="feature-card">
-        <div class="feature-icon" style="background:rgba(203,166,247,.12);color:#cba6f7">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        </div>
-        <h3>100% Local by Default</h3>
-        <p>All API calls use Node.js HTTP — no browser mixed-content issues. Plain HTTP remote Ollama works. Cloud endpoints supported via Preferences.</p>
       </div>
 
       <div class="feature-card">
         <div class="feature-icon" style="background:rgba(249,226,175,.12);color:#f9e2af">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
         </div>
-        <h3>Cluster Memory</h3>
-        <p>~85% token reduction on large clusters via persistent snapshots, namespace health rollups, and query-relevant BM25 filtering.</p>
+        <div class="feature-text">
+          <h3>Smart Context Pipeline</h3>
+          <p>ChunkManager → BM25 Retriever → SummaryManager → ContextBuilder. Only the 15 most query-relevant pods/deployments are injected per message, plus all anomalous resources — so even large clusters fit small models.</p>
+        </div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:rgba(137,180,250,.12);color:#89b4fa">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        </div>
+        <div class="feature-text">
+          <h3>Intent-Aware Response Format</h3>
+          <p>Every query is classified as <em>write</em>, <em>investigate</em>, <em>explain</em>, or <em>general</em>. Response structure adapts: full Evidence → Correlation → Hypotheses for investigations, direct manifest for YAML requests, clean prose for explanations.</p>
+        </div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:rgba(166,227,161,.12);color:#a6e3a1">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </div>
+        <div class="feature-text">
+          <h3>Canvas Relationship Graphs</h3>
+          <p>Dependency diagrams render as native Canvas — zero npm dependencies, no renderer crashes. K8s colour-coded nodes, bezier edges, BFS layout. Expand to full screen or download as PNG.</p>
+        </div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:rgba(203,166,247,.12);color:#cba6f7">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <div class="feature-text">
+          <h3>One-Click Workload Analysis</h3>
+          <p>Robot-icon button injected into every workload's toolbar, context menu, and detail drawer. Clicking opens a 640 px floating side panel with an analysis already running — no page navigation, no typing needed.</p>
+        </div>
       </div>
 
     </div>
   </div>
 </section>
 
-<!-- ── TOKEN TABLE ── -->
-<section class="section section-dark">
+<!-- ── WHAT CAN IT DO ── -->
+<section class="section section-dark" id="how-it-works">
   <div class="container">
-    <div class="section-label">Performance</div>
-    <h2 class="section-title">Token-efficient on large clusters</h2>
-    <p class="section-sub">Context pipeline designed specifically to avoid "lost-in-the-middle" failures on small models.</p>
+    <div class="section-label">Capabilities</div>
+    <h2 class="section-title">What can you ask it?</h2>
+    <p class="section-sub">Example queries across the six SRE domains it understands natively.</p>
     <div class="table-wrap">
       <table class="data-table">
         <thead>
-          <tr><th></th><th>v0.1.0</th><th>v0.2.0+</th></tr>
+          <tr><th>Category</th><th>Example queries</th></tr>
         </thead>
         <tbody>
-          <tr><td>System prompt cluster section (180 pods)</td><td>~6,500 tokens</td><td class="highlight">~1,000 tokens</td></tr>
-          <tr><td>Reduction</td><td>—</td><td class="highlight">~85%</td></tr>
-          <tr><td>Pods injected per message</td><td>All</td><td class="highlight">15 most relevant + all anomalies</td></tr>
-          <tr><td>History compression</td><td>None</td><td class="highlight">After 20 pairs → background summary</td></tr>
-          <tr><td>Added latency from compression</td><td>—</td><td class="highlight">Zero (post-response)</td></tr>
+          <tr>
+            <td class="td-category">Cluster health</td>
+            <td>"What's the overall health of my cluster?" &nbsp;·&nbsp; "Are there any pods in CrashLoopBackOff?"</td>
+          </tr>
+          <tr>
+            <td class="td-category">Troubleshooting</td>
+            <td>"Why is my deployment not rolling out?" &nbsp;·&nbsp; "Help me debug this crashing pod"</td>
+          </tr>
+          <tr>
+            <td class="td-category">YAML authoring</td>
+            <td>"Write a simple nginx deployment" &nbsp;·&nbsp; "Add a liveness probe to this deployment"</td>
+          </tr>
+          <tr>
+            <td class="td-category">Optimization</td>
+            <td>"Are there pods without resource limits?" &nbsp;·&nbsp; "Suggest HPA configs for my deployments"</td>
+          </tr>
+          <tr>
+            <td class="td-category">Security</td>
+            <td>"Check for pods running as root" &nbsp;·&nbsp; "Review my RBAC configuration"</td>
+          </tr>
+          <tr>
+            <td class="td-category">Operations</td>
+            <td>"How do I scale this deployment?" &nbsp;·&nbsp; "Generate a NetworkPolicy for namespace isolation"</td>
+          </tr>
         </tbody>
       </table>
     </div>
   </div>
 </section>
 
-<!-- ── SCREENSHOTS ── -->
-<section class="section" id="screenshots">
+<!-- ── INTENT DETECTION ── -->
+<section class="section">
   <div class="container">
-    <div class="section-label">Screenshots</div>
-    <h2 class="section-title">See it in action</h2>
-    <div class="screenshots-grid">
+    <div class="section-label">Response Intelligence</div>
+    <h2 class="section-title">Format adapts to your intent</h2>
+    <p class="section-sub">
+      Every query is classified automatically. The correlated signals block (warning events, crash pods, replica mismatches)
+      is injected only for investigative queries — skipped entirely for write, explain, and general.
+    </p>
+    <div class="table-wrap">
+      <table class="data-table intent-table">
+        <thead>
+          <tr><th>Intent</th><th>Triggered by</th><th>Response format</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="intent-badge intent-write">write</span></td>
+            <td>"write a deployment", "give me a YAML", "create a…"</td>
+            <td>Direct manifest + one-line RISK rating + verification step</td>
+          </tr>
+          <tr>
+            <td><span class="intent-badge intent-investigate">investigate</span></td>
+            <td>"why is…", "debug…", "crashloop", "not working"</td>
+            <td>Evidence → Correlation → Hypotheses → Checks → Actions</td>
+          </tr>
+          <tr>
+            <td><span class="intent-badge intent-explain">explain</span></td>
+            <td>"what is…", "how does…", "explain…"</td>
+            <td>Clean prose explanation</td>
+          </tr>
+          <tr>
+            <td><span class="intent-badge intent-general">general</span></td>
+            <td>Everything else</td>
+            <td>Concise direct answer</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
 
-      <figure class="screenshot-card">
-        <img src="screenshots/v0.3.0/chat_ui.png" alt="Chat UI" loading="lazy" />
-        <figcaption>Chat UI with suggestion carousel and context toolbar</figcaption>
-      </figure>
+<!-- ── TOOL CALLING ── -->
+<section class="section section-dark">
+  <div class="container">
+    <div class="section-label">Tool Calling</div>
+    <h2 class="section-title">Nine inspection tools, full control</h2>
+    <p class="section-sub">
+      The assistant inspects cluster resources on-demand during a conversation.
+      All tools require explicit Approve / Deny before execution. Each tool can be individually toggled in Preferences.
+    </p>
+    <div class="tools-grid">
 
-      <figure class="screenshot-card">
-        <img src="screenshots/v0.3.0/relation_map.png" alt="Relationship graph canvas renderer" loading="lazy" />
-        <figcaption>Canvas relationship graph — expand to full screen or save as PNG</figcaption>
-      </figure>
+      <div class="tool-group">
+        <div class="tool-group-label">Inspect</div>
+        <div class="tool-list">
+          <div class="tool-item">
+            <code>get_namespace_detail</code>
+            <span>Full pod / deployment / service list for a specific namespace</span>
+          </div>
+          <div class="tool-item">
+            <code>get_pod_detail</code>
+            <span>Container states, restart counts, exit codes, termination reasons</span>
+          </div>
+          <div class="tool-item">
+            <code>get_resource_events</code>
+            <span>Recent warning events for any named K8s resource</span>
+          </div>
+          <div class="tool-item">
+            <code>get_deployment_detail</code>
+            <span>Replica status and pod states for a deployment</span>
+          </div>
+          <div class="tool-item">
+            <code>get_nodes</code>
+            <span>All cluster nodes with Ready / NotReady status</span>
+          </div>
+          <div class="tool-item">
+            <code>get_resource_chain</code>
+            <span>Full upstream / downstream graph: owner controller, PVCs, missing Secrets/ConfigMaps, HPA, Ingress chain</span>
+          </div>
+        </div>
+      </div>
 
-      <figure class="screenshot-card">
-        <img src="screenshots/v0.3.0/hil_prompt.png" alt="Human-in-the-loop tool approval" loading="lazy" />
-        <figcaption>Human-in-the-loop tool approval card</figcaption>
-      </figure>
-
-      <figure class="screenshot-card">
-        <img src="screenshots/v0.3.0/tools.png" alt="Tool calling panel" loading="lazy" />
-        <figcaption>Granular tool control — enable or disable each tool individually</figcaption>
-      </figure>
-
-      <figure class="screenshot-card">
-        <img src="screenshots/v0.3.0/sources.png" alt="Sources panel" loading="lazy" />
-        <figcaption>Sources panel — snapshot age, filtered resource counts</figcaption>
-      </figure>
-
-      <figure class="screenshot-card">
-        <img src="screenshots/v0.3.0/suggestion_carousel_on.png" alt="Suggestion carousel" loading="lazy" />
-        <figcaption>Rotating suggestion chips — 25-item banks, refreshed every minute</figcaption>
-      </figure>
+      <div class="tool-group">
+        <div class="tool-group-label">List</div>
+        <div class="tool-list">
+          <div class="tool-item">
+            <code>list_resources</code>
+            <span>Full inventory of any resource kind: pods, deployments, services, nodes, secrets, configmaps, ingresses, statefulsets, daemonsets, jobs, cronjobs, pvcs</span>
+          </div>
+        </div>
+        <div class="tool-group-label" style="margin-top:20px">Sensitive</div>
+        <div class="tool-list">
+          <div class="tool-item tool-sensitive">
+            <code>get_pod_logs</code>
+            <span>Last 30 log lines (signal-filtered). Gated behind a dedicated approval requiring the model to state its rationale first.</span>
+          </div>
+          <div class="tool-item tool-sensitive">
+            <code>get_container_logs</code>
+            <span>Container-specific log access with auto-resolved container name from context.</span>
+          </div>
+        </div>
+      </div>
 
     </div>
   </div>
 </section>
 
 <!-- ── SRE MODES ── -->
+<section class="section">
+  <div class="container">
+    <div class="section-label">SRE Modes</div>
+    <h2 class="section-title">Six workflow presets, one selector</h2>
+    <p class="section-sub">Override intent auto-detection to lock the model into a specific analytical frame.</p>
+    <div class="table-wrap">
+      <table class="data-table modes-table">
+        <thead>
+          <tr><th>Mode</th><th>Behaviour</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Auto</strong></td><td>Intent detected from query text — recommended for general use</td></tr>
+          <tr><td><strong>Troubleshoot</strong></td><td>Always full investigation format: Evidence → Correlation → Hypotheses → Checks → Actions</td></tr>
+          <tr><td><strong>Security</strong></td><td>RBAC, PodSecurity, NetworkPolicy, image vulnerabilities, secret exposure risks</td></tr>
+          <tr><td><strong>Cost</strong></td><td>Waste reduction, right-sizing recommendations, autoscaling configuration</td></tr>
+          <tr><td><strong>Capacity</strong></td><td>Saturation signals, scheduling pressure, scaling strategy, resource headroom</td></tr>
+          <tr><td><strong>YAML</strong></td><td>Direct manifest output — no analysis preamble, no investigation sections</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── TOKEN EFFICIENCY ── -->
 <section class="section section-dark">
   <div class="container">
-    <div class="section-label">Workflow</div>
-    <h2 class="section-title">Six SRE modes, one selector</h2>
-    <p class="section-sub">Override auto-detection with a preset that matches your current task.</p>
-    <div class="modes-grid">
-      <div class="mode-card"><span class="mode-icon">🧭</span><strong>Auto</strong><span>Intent detected from query text</span></div>
-      <div class="mode-card"><span class="mode-icon">🛠</span><strong>Troubleshoot</strong><span>Always full investigation format</span></div>
-      <div class="mode-card"><span class="mode-icon">🔐</span><strong>Security</strong><span>RBAC, PodSecurity, NetworkPolicy, image risks</span></div>
-      <div class="mode-card"><span class="mode-icon">💸</span><strong>Cost</strong><span>Waste reduction, right-sizing, autoscaling</span></div>
-      <div class="mode-card"><span class="mode-icon">📈</span><strong>Capacity</strong><span>Saturation signals, scheduling pressure</span></div>
-      <div class="mode-card"><span class="mode-icon">📄</span><strong>YAML</strong><span>Direct manifest output, no analysis preamble</span></div>
+    <div class="section-label">Performance</div>
+    <h2 class="section-title">Token-efficient on large clusters</h2>
+    <p class="section-sub">
+      Context pipeline designed to avoid "lost-in-the-middle" failures on small models.
+      Non-blocking summarisation adds zero latency — compression runs after the response is delivered.
+    </p>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th></th><th>v0.1.0</th><th>v0.2.0+</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>System prompt cluster section (180 pods)</td>
+            <td>~6,500 tokens</td>
+            <td class="highlight">~1,000 tokens</td>
+          </tr>
+          <tr>
+            <td>Reduction</td>
+            <td>—</td>
+            <td class="highlight">~85%</td>
+          </tr>
+          <tr>
+            <td>Pods injected per message</td>
+            <td>All</td>
+            <td class="highlight">15 most relevant + all anomalies</td>
+          </tr>
+          <tr>
+            <td>History compression</td>
+            <td>None</td>
+            <td class="highlight">After 20 pairs → background summary</td>
+          </tr>
+          <tr>
+            <td>Added latency from compression</td>
+            <td>—</td>
+            <td class="highlight">Zero (post-response)</td>
+          </tr>
+          <tr>
+            <td>Anomaly sorting</td>
+            <td>None</td>
+            <td class="highlight">CrashLoop / OOMKilled / NotReady floated to top</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </section>
@@ -250,7 +429,7 @@
 <section class="section" id="quickstart">
   <div class="container">
     <div class="section-label">Quick Start</div>
-    <h2 class="section-title">Up and running in 4 steps</h2>
+    <h2 class="section-title">Up and running in four steps</h2>
 
     <div class="steps">
 
@@ -267,9 +446,10 @@ ollama serve</code></pre>
         <div class="step-num">2</div>
         <div class="step-content">
           <h3>Pull a model</h3>
-          <pre><code>ollama pull qwen2.5:7b   # recommended — strong tool-calling
-ollama pull gemma3:9b    # best reasoning on large clusters</code></pre>
-          <p class="step-note">⚠️ Models &lt; 4B parameters may fail on tool calls and structured reasoning.</p>
+          <pre><code>ollama pull qwen2.5:7b   # recommended — strong tool-calling and structured output
+ollama pull gemma3:9b    # excellent reasoning on large, complex clusters
+ollama pull mistral      # solid all-rounder</code></pre>
+          <p class="step-note">Models smaller than 4B parameters are not reliably supported. Tool-calling and multi-step reasoning require sufficient model capacity.</p>
         </div>
       </div>
 
@@ -277,8 +457,8 @@ ollama pull gemma3:9b    # best reasoning on large clusters</code></pre>
         <div class="step-num">3</div>
         <div class="step-content">
           <h3>Build the extension</h3>
-          <pre><code>git clone https://github.com/biurea/freelens-ollama-extension.git
-cd freelens-ollama-extension
+          <pre><code>git clone https://github.com/biurea/freelens-k8s-sre-assistant.git
+cd freelens-k8s-sre-assistant
 pnpm install &amp;&amp; pnpm build &amp;&amp; pnpm pack</code></pre>
         </div>
       </div>
@@ -286,12 +466,22 @@ pnpm install &amp;&amp; pnpm build &amp;&amp; pnpm pack</code></pre>
       <div class="step">
         <div class="step-num">4</div>
         <div class="step-content">
-          <h3>Load in Freelens</h3>
+          <h3>Load into Freelens</h3>
           <p>Open Freelens → <strong>Extensions</strong> → <strong>Add Local Extension</strong> → select the generated <code>.tgz</code> file.</p>
-          <p>The <strong>K8s SRE Assistant</strong> icon will appear in the left cluster sidebar. Click it to start chatting.</p>
+          <p>The <strong>K8s SRE Assistant</strong> entry will appear in the left cluster sidebar. Click it to open the chat, or use the robot icon on any workload to run an instant diagnosis.</p>
         </div>
       </div>
 
+    </div>
+
+    <div class="req-box">
+      <div class="req-box-title">Requirements</div>
+      <ul class="req-list">
+        <li>Freelens <strong>&ge; 1.4.0</strong></li>
+        <li>Ollama running locally or reachable on the network</li>
+        <li>At least one model pulled (7B+ recommended for tool-calling workflows)</li>
+        <li>Node.js / pnpm (build only — not required at runtime)</li>
+      </ul>
     </div>
   </div>
 </section>
@@ -300,7 +490,7 @@ pnpm install &amp;&amp; pnpm build &amp;&amp; pnpm pack</code></pre>
 <footer class="footer">
   <div class="footer-inner">
     <div class="footer-brand">
-      <svg class="nav-logo" viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17">
         <rect x="5" y="8" width="14" height="11" rx="2.5"/>
         <line x1="12" y1="8" x2="12" y2="4.5" stroke="currentColor" stroke-width="1.5"/>
         <circle cx="12" cy="3.5" r="1.5"/>
@@ -313,9 +503,10 @@ pnpm install &amp;&amp; pnpm build &amp;&amp; pnpm pack</code></pre>
       <span>K8s SRE Assistant</span>
     </div>
     <p class="footer-copy">
-      MIT License · <a href="https://github.com/biurea/freelens-ollama-extension" target="_blank" rel="noopener">github.com/biurea/freelens-ollama-extension</a>
+      MIT License &nbsp;·&nbsp;
+      <a href="https://github.com/biurea/freelens-k8s-sre-assistant" target="_blank" rel="noopener">github.com/biurea/freelens-k8s-sre-assistant</a>
     </p>
-    <p class="footer-vibecode">This is a vibecoded plugin — feel free to steal, edit, update or improve. All suggestions welcome.</p>
+    <p class="footer-vibecode">This is a vibecoded plugin — feel free to steal, edit, update, or improve. All suggestions welcome.</p>
   </div>
 </footer>
 
