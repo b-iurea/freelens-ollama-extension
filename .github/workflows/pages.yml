@@ -2,7 +2,7 @@ name: Deploy GitHub Pages
 
 on:
   push:
-    branches: [feat/create_web_site]
+    branches: [main]
     paths:
       - "docs/**"
   workflow_dispatch:
