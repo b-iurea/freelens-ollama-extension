@@ -1,5 +1,5 @@
 # 1. Base Model
-FROM sorc/qwen3.5-claude-4.6-opus:2b
+FROM sorc/qwen3.5-claude-4.6-opus:4b
 
 # 2. Hard Parameters (No inline comments to avoid Ollama errors)
 PARAMETER num_ctx 8192
