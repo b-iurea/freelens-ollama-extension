@@ -3,7 +3,7 @@
 An AI-powered **Kubernetes SRE (Site Reliability Engineer)** assistant embedded directly in Freelens. Chat with a local Ollama model that sees your live cluster state and adapts its response format to what you're actually asking.
 
 ![Freelens Extension](https://img.shields.io/badge/Freelens-Extension-blue)
-![Version](https://img.shields.io/badge/version-0.3.1-orange)
+![Version](https://img.shields.io/badge/version-0.3.2-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 <b>This is a vibecoded plugin so feel free to steal, edit, update or improve.
@@ -21,9 +21,15 @@ All suggestions are welcome. </b>
 - **Streaming Responses** — Block-level Markdown renderer safe for incomplete streamed output
 - **Cancelable** — Interrupt generation at any time
 
+### Network & Compatibility
+
+- **No Mixed-Content Issues** — All Ollama API calls use Node.js `http`/`https` modules; plain HTTP remote Ollama works reliably from the Electron renderer
+- **Remote Ollama** — Full support for remote instances (`OLLAMA_ORIGINS=*`, `OLLAMA_HOST=0.0.0.0:11434`)
+- **Cloud Ollama** — `num_predict: -1` and other unsupported params are automatically stripped before sending
+
 ---
 
-### Smart Context Management
+### Smart Context Management (v0.1.0)
 
 Designed to work well on small (4–9B) models against mid sized clusters.
 
@@ -94,7 +100,7 @@ The assistant adapts its response format to the intent of the query — no more 
 
 ---
 
-### Tool Calling & Human-in-the-Loop
+### Tool Calling & Human-in-the-Loop (v0.3.0)
 
 The assistant can inspect the cluster on-demand during a conversation, rather than relying solely on the upfront context snapshot.
 
@@ -112,7 +118,7 @@ The assistant can inspect the cluster on-demand during a conversation, rather th
 
 ---
 
-### Canvas Graph Renderer
+### Canvas Graph Renderer (v0.3.0)
 
 Mermaid relationship diagrams render as native Canvas — zero npm dependencies, no renderer crashes.
 
@@ -124,14 +130,14 @@ Mermaid relationship diagrams render as native Canvas — zero npm dependencies,
 
 ---
 
-### Secret & ConfigMap Resolution
+### Secret & ConfigMap Resolution (v0.3.0)
 
 - **Correct API names** — Secrets now fetched via `secretsApi` (previously `secretApi` — undefined — caused every secret reference to be falsely reported as `MISSING`)
 - **Namespace fallback** — When a namespace-scoped list call strips `metadata.namespace` from items (Freelens behaviour), the filter namespace is used as fallback, preventing false MISSING reports
 
 ---
 
-### Suggestion Carousel
+### Suggestion Carousel (v0.3.0)
 
 - **Collapsible** — Collapsed by default; a `▸ / ▾` toggle opens or closes the suggestion chips to save vertical space
 - **25-item banks** — Separate suggestion pools for all-namespaces view (cluster-wide health) and single-namespace view (workload investigation)
@@ -139,7 +145,7 @@ Mermaid relationship diagrams render as native Canvas — zero npm dependencies,
 
 ---
 
-### UI & Developer Experience
+### UI & Developer Experience (v0.3.0)
 
 - **Fixed Toolbar** — All controls live in a dedicated toolbar row below the title bar; scrolls horizontally on narrow windows, never wraps or jumps
 - **Always-Visible Buttons** — ⚙️ Params, 📚 Runbook, 📄 Export, 🗑️ Clear are always present and disabled (greyed out) when inactive, not hidden
@@ -154,16 +160,29 @@ Mermaid relationship diagrams render as native Canvas — zero npm dependencies,
 - **In-Chat Connection Panel** — Configure Ollama endpoint and test via Node.js HTTP (no mixed-content issues)
 - **Session Persistence** — Chat history persisted per `cluster + namespace`, restored on Freelens restart
 - **Object-Aware Prompt Entry** — URL params (`kind/name/namespace/reason`) prefill a targeted investigation prompt
+- **Workload Analysis Shortcuts** — single robot-icon button in the toolbar and 3-dot context menu opens a 640 px floating side panel with the SRE chat already running a relationship/dependency graph diagnosis for the selected workload, without leaving the workload view
 - **Persistent Settings** — All settings saved to `localStorage` and synced across Freelens contexts
 - **Back Navigation** — One-click return to the cluster dashboard
 
 ---
 
-### Network & Compatibility
+### Workload Analysis Shortcuts (v0.3.2)
 
-- **No Mixed-Content Issues** — All Ollama API calls use Node.js `http`/`https` modules; plain HTTP remote Ollama works reliably from the Electron renderer
-- **Remote Ollama** — Full support for remote instances (`OLLAMA_ORIGINS=*`, `OLLAMA_HOST=0.0.0.0:11434`)
-- **Cloud Ollama** — `num_predict: -1` and other unsupported params are automatically stripped before sending
+Launch SRE analysis directly from any workload — no need to open the chat and type. Clicking opens a **floating side panel** with the full chat experience right next to the workload, without leaving the page.
+
+**Context menu** (3-dot `⋮` button next to each workload):
+- 🤖 **SRE: Diagnose** — maps the full dependency chain: owner controller, PVCs, referenced Secrets/ConfigMaps, Services, Ingresses, HPA. The result appears in the SRE chat panel rendered inline at the right of the screen
+
+**Toolbar** (breadcrumb action bar when a workload row is selected):
+- Robot icon only — same diagnosis action, minimal footprint
+
+**Detail drawer** (click any workload to open the side panel):
+- Robot icon button at the bottom of the detail view — same one-click diagnosis
+
+**Floating chat popup** — instead of navigating away to the SRE page, a 640 px slide-in panel opens at the right edge of the window. The analysis starts immediately; close it with ✕ to return to the workload list. Messages use the full panel width so tables and structured output are readable.
+
+Supported kinds: **Pod**, **Deployment**, **StatefulSet**, **DaemonSet**, **ReplicaSet**.
+
 
 ---
 
@@ -304,8 +323,10 @@ src/
 ├── renderer/
 │   ├── index.tsx                   # Renderer entry (registers pages, menus, preferences)
 │   ├── components/
-│   │   ├── sre-chat.tsx            # Chat UI + all panels (Connection, Params, Stats, Sources, Tools)
-│   │   └── markdown-renderer.tsx   # Streaming-safe Markdown + pure-Canvas Mermaid renderer
+│   │   ├── sre-chat.tsx                  # Chat UI + all panels (Connection, Params, Stats, Sources, Tools)
+│   │   ├── markdown-renderer.tsx         # Streaming-safe Markdown + pure-Canvas Mermaid renderer
+│   │   ├── workload-analysis-menu.tsx    # Context-menu items for workload 3-dot menus
+│   │   └── workload-analysis-detail.tsx  # SRE panel injected into the workload detail drawer
 │   ├── icons/sre-icon.tsx
 │   ├── pages/sre-assistant-page.tsx
 │   ├── preferences/sre-preferences.tsx
@@ -412,6 +433,7 @@ src/
 - [x] Canvas graph renderer (no external dependencies, expand + PNG export)
 - [x] Auto container name resolution for `get_pod_logs`
 - [x] Secret/ConfigMap MISSING false-positive fix (`secretsApi` API name)
+- [x] Workload analysis shortcuts — context-menu and detail-drawer buttons for relationship map and resource analysis
 
 ### Planned
 
@@ -441,6 +463,19 @@ pnpm pack          # Pack .tgz for local Freelens installation
 ---
 
 ## Changelog
+
+### v0.3.2
+
+- **Workload analysis shortcuts** — two new entry points on every workload (Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet):
+  - **3-dot context menu** — `🔗 SRE: Relationship Map` and `📊 SRE: Resource Analysis` items alongside Logs / Edit / Delete
+  - **Detail drawer panel** — **SRE Assistant** section with the same two buttons at the bottom of the workload detail view
+- **`triggerWorkloadAnalysis`** — new `ChatStore` action builds a context-first prompt and auto-sends it; no typing required
+- **Context-first tool discipline** — tool descriptions and system prompt rules updated with explicit mandatory gates: tools are only called when the required data is genuinely absent from the live cluster context; fan-out (calling a tool for every item in a list already in context) is explicitly prohibited
+
+### v0.3.1
+
+- **Context-before-tools rule** — system prompt hardened with a numbered 6-step tool-call protocol: read live context first, check if data is present, only call a tool if absent, no fan-out across lists
+- **Tool description gates** — every tool description now starts with an explicit `ONLY call this when X is NOT already in the LIVE CLUSTER CONTEXT` guard
 
 ### v0.3.0
 

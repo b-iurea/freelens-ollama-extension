@@ -408,11 +408,11 @@ const S = {
     fontSize: "12px",
     cursor: "pointer",
   },
-  /* message row */
-  msgRow: (isUser: boolean) => ({
+  /* message row — width overridden at use-site for popup mode */
+  msgRow: (isUser: boolean, popupMode = false) => ({
     display: "flex",
     gap: "8px",
-    width: "50%",
+    width: popupMode ? "92%" : "50%",
     alignSelf: isUser ? "flex-end" : "flex-start",
     flexDirection: (isUser ? "row-reverse" : "row") as any,
   }),
@@ -656,7 +656,7 @@ const KEYFRAMES = `
 
 /* ────── Components ────── */
 
-export const SreChat = observer(() => {
+export const SreChat = observer(function SreChat({ onClose, popup = false }: { onClose?: () => void; popup?: boolean } = {}) {
   const [input, setInput] = useState("");
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -683,6 +683,17 @@ export const SreChat = observer(() => {
     const prompt = buildObjectAwarePromptFromUrl();
     if (prompt) setInput(prompt);
   }, []);
+
+  // Workload analysis trigger: when pendingAnalysis is set by a context-menu /
+  // detail-panel button, auto-send it as if the user typed it.
+  useEffect(() => {
+    if (chatStore.pendingAnalysis) {
+      const prompt = chatStore.consumePendingAnalysis();
+      if (prompt) {
+        chatStore.sendMessage(prompt);
+      }
+    }
+  }, [chatStore.pendingAnalysis]);
 
   const send = useCallback(async () => {
     if (!input.trim() || chatStore.isLoading) return;
@@ -790,10 +801,10 @@ export const SreChat = observer(() => {
       <div className="sre-title-bar">
         <button
           style={S.backBtn}
-          onClick={() => window.history.back()}
-          title="Back to cluster"
+          onClick={onClose ?? (() => window.history.back())}
+          title={onClose ? "Close panel" : "Back to cluster"}
         >
-          ←
+          {onClose ? "✕" : "←"}
         </button>
         <span style={{ fontSize: "18px" }}>🤖</span>
         <h2 style={S.headerTitle}>K8s SRE Assistant</h2>
@@ -1050,7 +1061,7 @@ export const SreChat = observer(() => {
         ) : (
           <>
             {chatStore.messages.map((m) => (
-              <MsgBubble key={m.id} message={m} />
+              <MsgBubble key={m.id} message={m} popup={popup} />
             ))}
             {chatStore.pendingToolApproval && (() => {
               const approval = chatStore.pendingToolApproval!;
@@ -1060,7 +1071,7 @@ export const SreChat = observer(() => {
               const icon   = isSensitive ? "🔐" : "🔧";
               const title  = isSensitive ? "Log access request" : "Tool call";
               return (
-                <div style={S.msgRow(false)}>
+                <div style={S.msgRow(false, popup)}>
                   <div style={S.avatar(false)}>{icon}</div>
                   <div style={{ ...S.bubble(false), border: `1px solid ${accent}`, background: bg, maxWidth: "100%" }}>
                     <div style={{ fontWeight: 600, marginBottom: 6, color: accent, fontSize: "12px" }}>
@@ -1080,7 +1091,7 @@ export const SreChat = observer(() => {
               );
             })()}
             {chatStore.isLoading && chatStore.lastMessage?.role !== "assistant" && (
-              <div style={S.msgRow(false)}>
+              <div style={S.msgRow(false, popup)}>
                 <div style={S.avatar(false)}>🤖</div>
                 <div style={S.bubble(false)}>
                   <LoadingDots />
@@ -1165,10 +1176,10 @@ export const SreChat = observer(() => {
 });
 
 /* ── Single message bubble ── */
-const MsgBubble = observer(({ message }: { message: ChatMessage }) => {
+const MsgBubble = observer(({ message, popup = false }: { message: ChatMessage; popup?: boolean }) => {
   const u = message.role === "user";
   return (
-    <div style={S.msgRow(u)}>
+    <div style={S.msgRow(u, popup)}>
       <div style={S.avatar(u)}>{u ? "👤" : "🤖"}</div>
       <div style={S.bubble(u)}>
         {u ? message.content : (
